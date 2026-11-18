@@ -8,7 +8,9 @@ built from the **SRD 5.2.1** (CC-BY 4.0, Wizards of the Coast LLC).
 ## What it is
 
 - Full character creation: all **12 SRD classes**, **9 species**, **4 backgrounds**,
-  Standard Array + 2024 background ability boosts, class skill choices, starting spells.
+  Ability scores your way — **Standard Array, 27-point Point Buy, or rolling 4d6 and
+  dropping the lowest die** (the classic method) — plus 2024 background ability boosts,
+  class skill choices, starting spells.
 - A real rules engine: d20 tests with advantage/disadvantage, crits, **Weapon Mastery**
   (Cleave, Graze, Nick, Push, Sap, Slow, Topple, Vex), grapple/shove as saving throws,
   spell slots (full / half / pact magic), concentration, death saving throws, Short and
