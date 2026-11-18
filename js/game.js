@@ -50,65 +50,93 @@ function makeChar({name, classId, speciesId, bgId, abilities, skills=[], feats=[
     equip:{weapon:null, armor:null, shield:false, offhand:null},
     spellsKnown:[], conditions:[], inspiration:false, dead:false, downed:false,
     deathSaves:{s:0,f:0}, concentrating:null, concTarget:null, mageArmor:false,
-    res:{}, feats:feats.slice(), subclass:false, wildShape:false, wildTemp:0,
+    res:{}, resMax:{}, feats:feats.slice(), subclass:false, wildShape:false, wildTemp:0,
     raging:false, smiteFreeUsed:false, hmFreeUsed:0, luckUsed:0, guidanceReady:false,
+    invocations:[], metamagic:[], masteredKinds:[], createdSlots:{}, shieldActive:false,
+    sorcRestUsed:false, arcaneRecoveryUsed:false, naturalRecoveryUsed:false, surgeUsed:false,
     x:0,y:0, color:"#c9a227", token:"?",
   };
   c.hp = maxHp(c);
   resetResources(c,true);
+  if(classId==="rogue") grantExpertise(c, 2); // Rogue Expertise at level 1
   return c;
 }
+// Choose Expertise skills automatically: the character's best proficient skills not already expert.
+function grantExpertise(c, n, pool){
+  c.expertise = c.expertise||[];
+  let cands = c.skillProf.filter(s=>!c.expertise.includes(s));
+  if(pool) cands = cands.filter(s=>pool.includes(s));
+  cands.sort((a,b)=>skillBonus(c,b)-skillBonus(c,a));
+  for(const s of cands.slice(0,n)) c.expertise.push(s);
+}
+function hasInvocation(c, id){ return !c.isMonster && (c.invocations||[]).includes(id); }
 function resetResources(c, full){
   const cls = c.classId, L = c.level;
   c.res = {};
   if(cls==="barbarian") c.res.rage = CLASSES.barbarian.rageUses(L);
-  if(cls==="fighter") c.res.secondWind = L>=10?3:2;
-  if(cls==="cleric") c.res.channel = L>=2?2:0;
-  if(cls==="paladin") c.res.channel = L>=3?2:0;
+  if(cls==="fighter") c.res.secondWind = SECOND_WIND_USES(L);
+  if(cls==="cleric") c.res.channel = CHANNEL_CLERIC[L-1]||0;
+  if(cls==="paladin") c.res.channel = CHANNEL_PALADIN[L-1]||0;
   if(cls==="monk") c.res.focus = L>=2?L:0;
-  if(cls==="sorcerer") c.res.sorcery = L>=2?L:0;
+  if(cls==="sorcerer"){ c.res.sorcery = L>=2?L:0; c.res.innate = 2; }
   if(cls==="bard") c.res.bardic = Math.max(1, amod(c,"cha"));
   if(cls==="paladin") c.res.layPool = 5*L;
-  if(cls==="druid") c.res.wildShape = L>=2?2:0;
+  if(cls==="druid") c.res.wildShape = WILD_SHAPE_USES[L-1]||0;
   if(cls==="warlock") c.res.cunningUsed = false;
-  c.smiteFreeUsed = false; c.hmFreeUsed = 0;
-  if(full){ c.slotsUsed = {}; c.pactUsed = 0; }
+  c.resMax = Object.assign({}, c.res);
+  c.smiteFreeUsed = false; c.hmFreeUsed = 0; c.surgeUsed = false;
+  c.sorcRestUsed = false; c.arcaneRecoveryUsed = false; c.naturalRecoveryUsed = false;
+  if(full){ c.slotsUsed = {}; c.pactUsed = 0; c.createdSlots = {}; }
 }
 function shortRestResources(c){
-  if(c.classId==="fighter") c.res.secondWind = Math.min((c.level>=10?3:2), (c.res.secondWind||0)+1);
-  if(c.classId==="cleric"||c.classId==="paladin") c.res.channel = Math.min(2,(c.res.channel||0)+1);
+  const maxOf = k => (c.resMax && typeof c.resMax[k]==="number")? c.resMax[k] : 0;
+  if(c.classId==="fighter") c.res.secondWind = Math.min(SECOND_WIND_USES(c.level), (c.res.secondWind||0)+1); // regain 1
+  if(c.classId==="cleric"||c.classId==="paladin") c.res.channel = Math.min(maxOf("channel"), (c.res.channel||0)+1); // regain 1
   if(c.classId==="monk") c.res.focus = c.level>=2?c.level:0;
-  if(c.classId==="druid") c.res.wildShape = c.level>=2?2:0;
+  if(c.classId==="druid") c.res.wildShape = Math.min(maxOf("wildShape"), (c.res.wildShape||0)+1); // regain 1
   if(c.classId==="warlock") c.pactUsed = 0;
-  if(c.classId==="bard" && c.level>=5) c.res.bardic = Math.max(1, amod(c,"cha"));
-  if(c.classId==="sorcerer" && c.level>=5) c.res.sorcery = Math.min(c.level,(c.res.sorcery||0)+Math.floor(c.level/2));
+  if(c.classId==="bard" && c.level>=5) c.res.bardic = Math.max(1, amod(c,"cha")); // Font of Inspiration
+  if(c.classId==="sorcerer" && c.level>=5 && !c.sorcRestUsed){ c.res.sorcery = Math.min(c.level,(c.res.sorcery||0)+Math.floor(c.level/2)); c.sorcRestUsed = true; } // Sorcerous Restoration, once per Long Rest
+  c.surgeUsed = false; // Action Surge recharges on a Short Rest
 }
 
 // ---------- Derived stats ----------
 function amod(c,a){ return modOf(c.abilities[a]); }
 function pb(c){ return pbForLevel(c.level); }
 function hasFeat(c,id){ return c.feats.includes(id); }
+function exhaustLevel(a){ const e = (a.conditions||[]).find(x=>x.name==="Exhaustion"); return e? (e.level||1):0; }
+function exhaustPen(a){ return a.isMonster? 0 : -2*exhaustLevel(a); } // -2 per level on every D20 Test
 function saveBonus(c,a){
-  let b = amod(c,a) + (CLASSES[c.classId].saves.includes(a)? pb(c):0);
-  // Aura of Protection from a nearby paladin is handled in combat checks; own aura:
-  return b;
+  let b = amod(c,a) + (CLASSES[c.classId].saves.includes(a)? pb(c):0) + exhaustPen(c);
+  // Aura of Protection (Paladin L6): the paladin and allies within 10 ft add the paladin's
+  // Cha modifier (minimum +1) to saving throws, while the paladin isn't Incapacitated.
+  const auraFrom = p => (p && !p.dead && !p.downed && p.classId==="paladin" && p.level>=6 && !(p.conditions||[]).some(x=>x.name==="Incapacitated"))? Math.max(1, amod(p,"cha")) : 0;
+  let aura = auraFrom(c);
+  if(!aura && typeof G!=="undefined" && G && G.party){
+    for(const p of G.party){ if(p!==c && auraFrom(p) && Math.max(Math.abs(p.x-c.x),Math.abs(p.y-c.y))*5<=10){ aura = auraFrom(p); break; } }
+  }
+  return b + aura;
 }
+function blessDie(a){ return (a.conditions||[]).some(x=>x.name==="Blessed")? rollDie(4) : 0; }
 function skillBonus(c,skill){
   const ab = SKILLS[skill];
-  let b = amod(c,ab);
+  let b = amod(c,ab) + exhaustPen(c);
   if(c.skillProf.includes(skill)) b += pb(c) * (c.expertise.includes(skill)?2:1);
   else if(c.classId==="bard" && c.level>=2) b += Math.floor(pb(c)/2); // Jack of All Trades
   return b;
 }
 function passivePerception(c){ return 10 + skillBonus(c,"Perception"); }
-function initiativeBonus(c){ let b = amod(c,"dex"); if(hasFeat(c,"alert")) b += pb(c); if(c.classId==="fighter"&&c.level>=7) b+=pb(c); return b; }
+function initiativeBonus(c){ let b = amod(c,"dex"); if(hasFeat(c,"alert")) b += pb(c); return b; }
 function speedOf(c){
+  if(c.wildShape) return Math.max(0, 40 - 5*exhaustLevel(c));
   let s = SPECIES[c.speciesId] ? SPECIES[c.speciesId].speed : 30;
   if(c.classId==="monk" && !c.equip.armor) s += c.level>=6?15: c.level>=2?10:0;
   if(c.classId==="barbarian" && c.level>=5 && !(c.equip.armor && armorDef(c.equip.armor).kind==="heavy")) s += 10;
+  if(c.classId==="ranger" && c.level>=6 && !(c.equip.armor && armorDef(c.equip.armor).kind==="heavy")) s += 10; // Roving
   const arm = c.equip.armor? armorDef(c.equip.armor):null;
   if(arm && arm.strReq && c.abilities.str < arm.strReq) s -= 10;
-  return Math.max(5,s);
+  s -= 5*exhaustLevel(c); // Exhaustion: -5 ft per level
+  return Math.max(0,s);
 }
 function maxHp(c){
   const cls = CLASSES[c.classId];
@@ -134,6 +162,7 @@ function armorClass(c){
   if(c.equip.shield) ac += 2;
   if(c.classId==="fighter" && arm) ac += 1; // Defense fighting style
   if(c.conditions.some(x=>x.name==="Hasted")) ac += 2;
+  if(c.shieldActive) ac += 5; // Shield spell, until the start of your next turn
   return ac;
 }
 function spellAbility(c){ const cl = CLASSES[c.classId]; return cl? cl.spellAbility : null; }
@@ -141,9 +170,11 @@ function spellDC(c){ return spellAbility(c)? 8 + amod(c,spellAbility(c)) + pb(c)
 function spellAtkBonus(c){ return spellAbility(c)? amod(c,spellAbility(c)) + pb(c) : 0; }
 function maxSlots(c){
   const t = CLASSES[c.classId].spellcasting;
-  if(t==="full") return (FULL_SLOTS[c.level]||[]).slice();
-  if(t==="half") return (HALF_SLOTS[c.level]||[]).slice();
-  return [];
+  let m = [];
+  if(t==="full") m = (FULL_SLOTS[c.level]||[]).slice();
+  else if(t==="half") m = (HALF_SLOTS[c.level]||[]).slice();
+  if(c.createdSlots){ for(const l of Object.keys(c.createdSlots)){ const i = parseInt(l,10)-1; m[i] = (m[i]||0) + c.createdSlots[l]; } } // Sorcerer-created slots (Font of Magic)
+  return m;
 }
 function slotsLeft(c, lvl){
   if(CLASSES[c.classId].spellcasting==="pact"){ const p = PACT_SLOTS[c.level]; return (p && p.lvl===lvl)? p.n - c.pactUsed : 0; }
@@ -152,6 +183,12 @@ function slotsLeft(c, lvl){
 function useSlot(c, lvl){
   if(CLASSES[c.classId].spellcasting==="pact"){ c.pactUsed++; return; }
   c.slotsUsed[lvl] = (c.slotsUsed[lvl]||0)+1;
+}
+function cantripLimit(c){
+  const cls = CLASSES[c.classId];
+  let n = cls.cantripsAt? cls.cantripsAt(c.level) : (cls.cantrips||0);
+  if(hasInvocation(c,"pact_of_the_tome")) n += 1;
+  return n;
 }
 function isProficientWith(c, w){
   const cats = CLASSES[c.classId].weapons;
@@ -162,13 +199,34 @@ function isProficientWith(c, w){
   return false;
 }
 function hasMastery(c){ return (CLASSES[c.classId].features[1]||[]).includes("Weapon Mastery"); }
+// Weapon Mastery applies to a limited number of weapon kinds (re-picked on a Long Rest).
+function hasMasteryFor(c, w){
+  const max = CLASSES[c.classId].masteryKinds||0;
+  if(!max || !w || !w.mastery) return false;
+  const k = (w.id||w.name||"").replace(/_\d+$/,"");
+  c.masteredKinds = c.masteredKinds||[];
+  if(c.masteredKinds.includes(k)) return true;
+  if(c.masteredKinds.length < max){ c.masteredKinds.push(k); return true; }
+  return false;
+}
 function weaponAttackBonus(c, w){
   const ranged = !!w.ranged;
-  const ab = ranged? "dex" : (w.props.includes("Finesse")? (amod(c,"str")>=amod(c,"dex")?"str":"dex") : "str");
+  let ab = ranged? "dex" : (w.props.includes("Finesse")? (amod(c,"str")>=amod(c,"dex")?"str":"dex") : "str");
+  // Martial Arts: a Monk uses Dexterity for unarmed strikes and Monk weapons (simple / Light martial).
+  if(c.classId==="monk" && !ranged && (w.cat==="simple" || w.props.includes("Light"))) ab = amod(c,"dex")>=amod(c,"str")? "dex":"str";
+  // Pact of the Blade: the pact weapon uses Charisma.
+  if(c.classId==="warlock" && hasInvocation(c,"pact_of_the_blade") && !ranged) ab = amod(c,"cha")>=amod(c,ab)? "cha":ab;
   let b = amod(c,ab) + (isProficientWith(c,w)? pb(c):0) + (w.bonus||0);
   if(c.sacredWeapon) b += amod(c,"cha");
   return {bonus:b, ability:ab};
 }
+function weaponRangeFt(w){
+  if(!w) return 5;
+  if(w.ranged){ const p = w.props.find(x=>x.startsWith("Ammunition")); if(p){ const m = p.match(/(\d+)\/(\d+)/); if(m) return parseInt(m[2],10); } return 80; }
+  const th = w.props.find(x=>x.startsWith("Thrown")); if(th){ const m = th.match(/(\d+)\/(\d+)/); if(m) return parseInt(m[2],10); }
+  return w.props.includes("Reach")? 10:5;
+}
+function thrownNormalFt(w){ const th = w && w.props.find(x=>x.startsWith("Thrown")); if(th){ const m = th.match(/(\d+)\//); if(m) return parseInt(m[1],10); } return 0; }
 function sneakDice(c){ return c.classId==="rogue"? Math.ceil(c.level/2) : 0; }
 
 // ---------- Game state ----------
@@ -179,7 +237,7 @@ function newGameState(hero){
     inventory: [], // {id, qty}
     map:"emberford", quests:{}, flags:{}, codex:{}, chestsTaken:{}, encountersDone:{},
     log: [], startedAt: Date.now(), playMs: 0, kills:0, ending:null,
-    companions:{}, guidanceFor:null,
+    companions:{}, guidanceFor:null, clock: 8, lastLongRest: -999, // world clock in hours; a Long Rest's benefits need 24h between them
   };
 }
 function hero(){ return G.party.find(c=>c.uid===G.heroUid); }
@@ -235,6 +293,7 @@ function npcVisible(id){
 function enterMap(mapId, tx, ty){
   let id = mapId;
   if(id==="emberford" && G.flags.siegeActive && !G.quests.MQ5?.done) id = "emberford_siege";
+  if(G.map && G.map!==id) G.clock = (G.clock||8) + 1; // travel passes time
   G.map = id;
   curMap = Object.assign({id}, MAPS[id]);
   const h = hero();
@@ -504,6 +563,7 @@ function chooseDlgOption(o){
     let extra = "";
     if(G.guidanceFor===h.uid){ const g = rollDie(4); r.total += g; r.success = r.total>=o.check.dc; extra = ` + Guidance ${g}`; G.guidanceFor=null; }
     log(`${h.name} — ${o.check.skill} check: rolled ${r.kept} ${fmtMod(r.bonus)}${extra} = ${r.total} vs DC ${o.check.dc} — <b>${r.success?"SUCCESS":"FAILURE"}</b>.`, r.success?"good":"bad");
+    if(!r.success && h.inspiredDie){ const add = rollDie(h.inspiredDie); h.inspiredDie = 0; r.total += add; r.success = r.total>=o.check.dc; log(`Bardic Inspiration! +${add} → ${r.total} — <b>${r.success?"SUCCESS":"FAILURE"}</b>.`, r.success?"good":"bad"); showDialogue(r.success? o.check.ok : o.check.fail); return; }
     if(h.inspiration && !r.success){ const r2 = d20Test({bonus: skillBonus(h,o.check.skill), dc:o.check.dc}); h.inspiration=false; log(`Heroic Inspiration! Reroll: ${r2.kept} ${fmtMod(r2.bonus)} = ${r2.total} — <b>${r2.success?"SUCCESS":"FAILURE"}</b>.`, r2.success?"good":"bad"); showDialogue(r2.success? o.check.ok : o.check.fail); return; }
     showDialogue(r.success? o.check.ok : o.check.fail);
     return;
@@ -554,7 +614,15 @@ function levelUpSilent(c){
   const avg = Math.floor(CLASSES[c.classId].hitDie/2)+1;
   c.hpRolls.push(avg); c.level++;
   if(c.level===3) c.subclass = true;
+  grantLevelFeatures(c);
   resetResources(c,true); c.hp = maxHp(c);
+}
+// One-time feature grants that depend on reaching a level (Expertise choices etc.)
+function grantLevelFeatures(c){
+  if(c.level===2 && c.classId==="bard") grantExpertise(c, 2); // Bard Expertise
+  if(c.level===2 && c.classId==="ranger") grantExpertise(c, 1); // Deft Explorer
+  if(c.level===2 && c.classId==="wizard") grantExpertise(c, 1, ["Arcana","History","Investigation","Medicine","Nature","Religion"]); // Scholar
+  if(c.level===6 && c.classId==="rogue") grantExpertise(c, 2); // Rogue Expertise (second round)
 }
 
 // ---------- Shops ----------
@@ -592,7 +660,13 @@ openShop = function(id){ currentShopId = id; _openShop(id); };
 // ---------- Rests ----------
 function shortRest(){
   if(COMBAT) return;
+  G.clock = (G.clock||8) + 1;
   let html = `<h2>Short Rest (1 hour)</h2><p>Spend Hit Dice to recover HP (die + Con modifier each). Warlocks regain Pact slots; several class resources refresh.</p>`;
+  for(const c of G.party){
+    if(c.classId==="wizard" && !c.arcaneRecoveryUsed) html += `<div class="shop-row"><span><b>${esc(c.name)}</b> — Arcane Recovery: regain spell slots totalling up to ${Math.ceil(c.level/2)} levels (once per Long Rest).</span><button onclick="arcaneRecovery('${c.uid}')">Recover slots</button></div>`;
+    if(c.classId==="druid" && c.level>=6 && !c.naturalRecoveryUsed) html += `<div class="shop-row"><span><b>${esc(c.name)}</b> — Natural Recovery: regain spell slots totalling up to ${Math.ceil(c.level/2)} levels (once per day).</span><button onclick="naturalRecovery('${c.uid}')">Recover slots</button></div>`;
+    if(c.classId==="druid" && c.level>=5) html += `<div class="shop-row"><span><b>${esc(c.name)}</b> — Wild Resurgence: trade a spell slot for a Wild Shape use, or a use for a 1st-level slot.</span><span><button onclick="wildResurgence('${c.uid}','slot')">Slot → Shape</button> <button onclick="wildResurgence('${c.uid}','shape')">Shape → Slot</button></span></div>`;
+  }
   for(const c of G.party){
     const hd = CLASSES[c.classId].hitDie, left = c.level - c.hitDiceUsed;
     html += `<div class="shop-row"><span><b>${esc(c.name)}</b> — HP ${c.hp}/${maxHp(c)}, Hit Dice: ${left}/${c.level} (d${hd})</span><span>
@@ -618,8 +692,42 @@ function spendHitDie(uid, all){
   shortRest();
   refreshPanels();
 }
+// Recover spent slots, lowest first, up to a total slot-level budget (Arcane / Natural Recovery).
+function recoverSlots(c, budget){
+  let left = budget, got = [];
+  for(let l=1;l<=5 && left>0;l++){
+    while((c.slotsUsed[l]||0)>0 && left>=l){ c.slotsUsed[l]--; left -= l; got.push(l); }
+  }
+  return got;
+}
+function arcaneRecovery(uid){
+  const c = G.party.find(x=>x.uid===uid); if(!c||c.arcaneRecoveryUsed) return;
+  const got = recoverSlots(c, Math.ceil(c.level/2));
+  c.arcaneRecoveryUsed = true;
+  log(`Arcane Recovery: ${c.name} regains ${got.length? got.map(l=>"a level-"+l+" slot").join(", ") : "no slots (none spent)"}.`,"good");
+  shortRest(); refreshPanels();
+}
+function naturalRecovery(uid){
+  const c = G.party.find(x=>x.uid===uid); if(!c||c.naturalRecoveryUsed) return;
+  const got = recoverSlots(c, Math.ceil(c.level/2));
+  c.naturalRecoveryUsed = true;
+  log(`Natural Recovery: ${c.name} regains ${got.length? got.map(l=>"a level-"+l+" slot").join(", ") : "no slots (none spent)"}.`,"good");
+  shortRest(); refreshPanels();
+}
+function wildResurgence(uid, dir){
+  const c = G.party.find(x=>x.uid===uid); if(!c) return;
+  if(dir==="slot"){ // expend a slot -> +1 Wild Shape use (once per turn; here once per rest action)
+    for(let l=1;l<=4;l++){ if(slotsLeft(c,l)>0){ useSlot(c,l); c.res.wildShape = (c.res.wildShape||0)+1; log(`Wild Resurgence: ${c.name} trades a level-${l} slot for a Wild Shape use.`,"good"); shortRest(); refreshPanels(); return; } }
+    log("No spell slots to trade.","bad");
+  } else {
+    if(c.res.shapeToSlotUsed){ log("Already traded a Wild Shape use for a slot since the last Long Rest.","bad"); return; }
+    if((c.res.wildShape||0)>0 && (c.slotsUsed[1]||0)>0){ c.res.wildShape--; c.slotsUsed[1]--; c.res.shapeToSlotUsed = true; log(`Wild Resurgence: ${c.name} trades a Wild Shape use for a 1st-level slot.`,"good"); shortRest(); refreshPanels(); }
+    else log("Needs a Wild Shape use and a spent 1st-level slot.","bad");
+  }
+}
 function tryLongRest(){
   if(COMBAT){ log("You can't rest in combat!","bad"); return; }
+  if((G.clock||8) - (G.lastLongRest??-999) < 24){ log("You've already benefited from a Long Rest within the last 24 hours — a creature can do so only once per day. Adventure on (fights, travel and Short Rests pass the time), then rest again.","bad"); return; }
   if(curMap && (curMap.id==="emberford" || curMap.id==="emberford_siege")){
     longRest("You take rooms at the Drowned Flagon. Eight hours of real sleep — HP, Hit Dice, spell slots and class resources fully restored.");
   } else {
@@ -627,12 +735,14 @@ function tryLongRest(){
   }
 }
 function longRest(msg){
+  G.lastLongRest = G.clock||8; G.clock = (G.clock||8) + 8;
   for(const c of G.party){
     if(c.dead) continue;
     c.hp = maxHp(c); c.tempHp = 0; c.hitDiceUsed = 0; c.downed=false; c.deathSaves={s:0,f:0};
     c.conditions = c.conditions.filter(x=>x.name==="Exhaustion");
-    c.concentrating = null; c.concTarget = null; c.mageArmor=false; c.raging=false; c.wildShape=false;
+    c.concentrating = null; c.concTarget = null; c.mageArmor=false; c.raging=false; c.wildShape=false; c.wildTemp = 0;
     c.maxHpReduction = 0; c.aidBonus = 0; c.relenUsed = false; c.divineFavor = false; c.sacredWeapon = false; c.innateActive = false;
+    c.shieldActive = false; c.masteredKinds = []; // Weapon Mastery kinds are re-picked on a Long Rest
     resetResources(c,true);
     if(c.speciesId==="human") c.inspiration = true;
     // exhaustion drops by 1
@@ -713,7 +823,14 @@ function occupied(x,y, ignoreUid){
   if(COMBAT && COMBAT.actors.some(a=>a.isMonster&&!a.dead&&a.uid!==ignoreUid&&a.x===x&&a.y===y)) return true;
   return false;
 }
-function bfs(map, sx, sy, maxTiles, ignoreUid){
+function occupantAt(x,y, ignoreUid){
+  const p = G.party.find(c=>!c.dead && c.uid!==ignoreUid && c.x===x&&c.y===y); if(p) return p;
+  if(COMBAT) return COMBAT.actors.find(a=>a.isMonster&&!a.dead&&a.uid!==ignoreUid&&a.x===x&&a.y===y)||null;
+  return null;
+}
+// side: true = monster mover, false = party mover, undefined = everyone blocks (exploration pathfinding).
+// You can move THROUGH a non-hostile creature's space; you just can't end your turn there.
+function bfs(map, sx, sy, maxTiles, ignoreUid, side){
   const dist = new Map(); dist.set(sx+","+sy, 0);
   const q = [[sx,sy]];
   while(q.length){
@@ -723,13 +840,50 @@ function bfs(map, sx, sy, maxTiles, ignoreUid){
       const nx=x+dx, ny=y+dy, k=nx+","+ny;
       if(dist.has(k)) continue;
       if(!passable(map,nx,ny)) continue;
-      if(occupied(nx,ny,ignoreUid)) continue;
+      const occ = occupantAt(nx,ny,ignoreUid);
+      if(occ && (side===undefined || occ.isMonster!==side)) continue;
       // no corner cutting through walls diagonally
       if(dx&&dy && (!passable(map,x+dx,y)||!passable(map,x,y+dy))) continue;
       dist.set(k, d+1); q.push([nx,ny]);
     }
   }
   return dist;
+}
+// Line of sight: walls (#) block completely; trees (T) grant cover instead of blocking.
+function hasLoS(a, b){
+  const steps = Math.max(Math.abs(b.x-a.x), Math.abs(b.y-a.y)) * 2;
+  if(steps===0) return true;
+  for(let i=1;i<steps;i++){
+    const x = Math.round(a.x + (b.x-a.x)*i/steps), y = Math.round(a.y + (b.y-a.y)*i/steps);
+    if(x===a.x&&y===a.y) continue; if(x===b.x&&y===b.y) continue;
+    if(tileAt(curMap,x,y)==="#") return false;
+  }
+  return true;
+}
+// Half cover (+2 AC / Dex saves) if a tree or wall edge sits between attacker and target, near the target.
+function coverBonus(att, def){
+  if(!att || !def || att===def) return 0;
+  const dx = Math.sign(def.x-att.x), dy = Math.sign(def.y-att.y);
+  const cx = def.x-dx, cy = def.y-dy;
+  if(cx===att.x && cy===att.y) return 0; // adjacent: no cover
+  const t = tileAt(curMap,cx,cy);
+  return (t==="T"||t==="#")? 2:0;
+}
+// Monster spell slots are per spell level (2025 stat blocks).
+function monsterPB(m){ const cr = String((m&&m.cr)||"1"); const num = cr==="1/8"?0.125: cr==="1/4"?0.25: cr==="1/2"?0.5: parseFloat(cr)||1; return num>=13?5: num>=9?4: num>=5?3:2; }
+function monsterSlotAvailable(m, lvl){
+  if(!m.spells) return false;
+  if(m.spells.slotLevels){ for(let l=lvl;l<=5;l++) if((m.slotsUsedByLvl[l]||0) < (m.spells.slotLevels[l]||0)) return true; return false; }
+  return (m.slotsUsed||0) < (m.spells.slots||0);
+}
+function monsterAnySlot(m){
+  if(!m.spells) return false;
+  if(m.spells.slotLevels) return Object.keys(m.spells.slotLevels).some(l=>monsterSlotAvailable(m, parseInt(l,10)));
+  return (m.slotsUsed||0) < (m.spells.slots||0);
+}
+function useMonsterSlot(m, lvl){
+  if(m.spells && m.spells.slotLevels){ for(let l=lvl;l<=5;l++){ if((m.slotsUsedByLvl[l]||0) < (m.spells.slotLevels[l]||0)){ m.slotsUsedByLvl[l] = (m.slotsUsedByLvl[l]||0)+1; return l; } } return 0; }
+  m.slotsUsed = (m.slotsUsed||0)+1; return lvl;
 }
 function startCombat(enc){
   const actors = [];
@@ -741,20 +895,27 @@ function startCombat(enc){
   }
   enc.monsters.forEach(([mid,x,y],i)=>{
     const def = MONSTERS[mid];
-    const m = { uid:"m"+enc.id+i, mid, isMonster:true, name:def.name, x, y,
+    const m = { uid:"m"+enc.id+i, mid, isMonster:true, name:def.name, x, y, cr:def.cr,
       ac:def.ac, maxHp:def.hp, hp:def.hp, speed:def.speed, ab:def.ab, atk:def.atk, spells:def.spells,
-      slotsUsed:0, conditions:[], dead:false, downed:false, color:"#a33", token:def.name[0],
+      slotsUsed:0, slotsUsedByLvl:{}, conditions:[], dead:false, downed:false, color:"#a33", token:def.name[0],
+      creatureType:def.creatureType||"humanoid", saveProf:def.saveProf||[], resistNonmagic:!!def.resistNonmagic,
+      redirectAttack:!!def.redirectAttack, skills:def.skills||null,
       vuln:def.vuln||[], immune:def.immune||[], resist:def.resist||[], boss:!!def.boss };
     actors.push(m); state[m.uid] = freshTurnState();
     G.codex[mid] = (G.codex[mid]||0)+1;
   });
-  // initiative
+  // initiative (2024 Surprise: the surprised side has Disadvantage on the roll, nothing more)
   const withInit = actors.map(a=>{
     const bonus = a.isMonster? modOf(a.ab.dex) : initiativeBonus(a);
-    const r = rollDie(20);
-    return {a, init: r+bonus, roll:r, bonus};
+    let adv = null;
+    if(!a.isMonster && a.classId==="fighter" && a.level>=7 && a.subclass) adv = "adv"; // Champion: Remarkable Athlete
+    if(!a.isMonster && a.classId==="barbarian" && a.level>=7) adv = "adv"; // Feral Instinct
+    if(enc.surprise && ((enc.surprise==="party" && !a.isMonster) || (enc.surprise==="monsters" && a.isMonster))) adv = "dis";
+    const rr = d20roll(adv);
+    return {a, init: rr.kept+bonus, roll:rr.kept, bonus};
   }).sort((p,q)=> q.init-p.init || (q.a.isMonster?0:1)-(p.a.isMonster?0:1));
-  COMBAT = { enc, actors: withInit.map(w=>w.a), order: withInit, state, turnIdx:-1, round:0, mode:null, awaiting:null, xpPool: enc.monsters.reduce((s,[mid])=>s+ (monsterXp(mid)),0), over:false };
+  COMBAT = { enc, actors: withInit.map(w=>w.a), order: withInit, state, turnIdx:-1, round:0, mode:null, awaiting:null, surprisedSide: enc.surprise||null, xpPool: enc.monsters.reduce((s,[mid])=>s+ (monsterXp(mid)),0), over:false };
+  if(enc.surprise) log(enc.surprise==="party"? "The enemy strikes from surprise — you have Disadvantage on Initiative!" : "You catch the enemy by surprise — they have Disadvantage on Initiative.","sys");
   log(`<b>Combat!</b> Initiative: ${withInit.map(w=>`${esc(w.a.name)} ${w.init}`).join(", ")}.`,"bad");
   $("combat-bar").style.display="block";
   refreshAll();
@@ -765,7 +926,8 @@ function monsterXp(mid){
   const table = {"1/8":25,"1/4":50,"1/2":100,"1":200,"2":450,"3":700,"4":1100,"5":1800,"6":2300,"7":2900};
   return table[cr]||50;
 }
-function freshTurnState(){ return {moveLeft:0, actionUsed:false, bonusUsed:false, reactionUsed:false, attacksLeft:0, dashed:false, disengaged:false, dodging:false, hidden:false, vexTarget:null, sapped:false, guidedTarget:null, reckless:false, smitePending:null}; }
+function freshTurnState(){ return {moveLeft:0, actionUsed:false, bonusUsed:false, reactionUsed:false, attacksLeft:0, dashed:false, disengaged:false, dodging:false, hidden:false, vexTarget:null, sapped:false, guidedTarget:null, reckless:false, recklessUsed:false, smitePending:null,
+  sneakUsed:false, colossusUsed:false, frenzyUsed:false, savageUsed:false, nickUsed:false, cleaveUsed:false, masteryUsed:false, smiteUsed:false, stunUsed:false, stunArmed:false, slotSpellCast:false, hasteAction:false, readied:false, slowedNext:false, flurryPending:0, steadyAim:false, surgeUsed:false}; }
 function currentActor(){ return COMBAT.actors[COMBAT.turnIdx]; }
 function renderTurnOrder(){
   const el = $("turn-order"); if(!el||!COMBAT) return;
@@ -782,61 +944,109 @@ async function nextTurn(){
   const a = currentActor();
   const st = actorState(a);
   Object.assign(st, freshTurnState());
+  a.shieldActive = false; // a Shield spell ends at the start of the caster's next turn
   st.moveLeft = a.isMonster? a.speed : speedOf(a);
-  if(hasCond(a,"Hasted")) st.moveLeft *= 2;
+  if(hasCond(a,"Hasted")){ st.moveLeft *= 2; st.hasteAction = true; }
   if(hasCond(a,"Slowed")) st.moveLeft = Math.max(0, st.moveLeft-10);
   if(a.conditions.some(x=>x.name==="Prone")){ st.moveLeft = Math.floor(st.moveLeft/2); removeCondition(a,"Prone"); log(`${esc(a.name)} stands up (half movement).`,"sys"); }
-  if(a.conditions.some(x=>x.name==="Restrained")||a.conditions.some(x=>x.name==="Paralyzed")||a.conditions.some(x=>x.name==="Stunned")) st.moveLeft = 0;
-  // spirit guardians aura
+  if(a.conditions.some(x=>["Restrained","Paralyzed","Stunned","Grappled"].includes(x.name))) st.moveLeft = 0;
+  // Heroism: temporary HP refreshes at the start of the creature's turn
+  const heroism = a.conditions.find(x=>x.name==="Heroism");
+  if(heroism && !a.isMonster){ a.tempHp = Math.max(a.tempHp||0, heroism.amt||0); }
+  // Readied attacks trigger as a foe takes its turn within reach
+  if(a.isMonster) await resolveReadied(a);
+  if(!COMBAT || COMBAT.over) return;
+  // spirit guardians aura: damage when starting your turn in the emanation; Speed reduced inside it
   for(const g of COMBAT.actors){
     if(g.dead||g===a) continue;
     if(g.concentrating==="spirit_guardians" && a.isMonster!==g.isMonster && distFt(a,g)<=15){
-      const dc = g.isMonster? g.spells.dc : spellDC(g);
-      const dmg = rollDice(3,8).tot;
-      const sv = a.isMonster? d20Test({bonus: saveBonusMonster(a,"wis"), dc}) : d20Test({bonus: saveBonus(a,"wis"), dc});
-      const taken = sv.success? Math.floor(dmg/2):dmg;
-      log(`Spirit Guardians scour ${esc(a.name)}: Wis save ${sv.total} vs ${dc} — ${taken} radiant.`,"sys");
-      applyDamage(a, taken, "radiant", g);
+      st.moveLeft = Math.max(0, st.moveLeft-10);
+      spiritGuardiansHit(a, g);
     }
   }
   refreshAll();
   if(a.dead || (a.isMonster&&a.hp<=0)){ nextTurn(); return; }
   if(!a.isMonster && a.downed){ await deathSaveTurn(a); return; }
-  if(a.conditions.some(x=>x.name==="Paralyzed"||x.name==="Stunned"||x.name==="Unconscious")){
+  if(a.conditions.some(x=>["Paralyzed","Stunned","Unconscious"].includes(x.name) || (x.name==="Incapacitated" && !x.turned))){
     log(`${esc(a.name)} is incapacitated and loses the turn.`,"bad");
     await sleep(500); endTurnEffects(a); nextTurn(); return;
   }
   if(a.isMonster){ renderCombatBar(); await sleep(450); await enemyTurn(a); }
   else renderCombatBar();
 }
+function spiritGuardiansHit(a, g){
+  const dc = g.isMonster? g.spells.dc : spellDC(g);
+  const dmgType = g.isMonster? "necrotic" : "radiant"; // Vespera's guardians are of the grave, not the dawn
+  const dmg = rollDice(3,8).tot;
+  const sv = a.isMonster? d20Test({bonus: saveBonusMonster(a,"wis"), dc}) : d20Test({bonus: saveBonus(a,"wis")+blessDie(a), dc});
+  const taken = sv.success? Math.floor(dmg/2):dmg;
+  log(`Spirit Guardians scour ${esc(a.name)}: Wis save ${sv.total} vs ${dc} — ${taken} ${dmgType}.`,"sys");
+  applyDamage(a, taken, dmgType, g, {spell:true});
+}
+async function resolveReadied(foe){
+  for(const p of activeParty()){
+    const pst = actorState(p);
+    if(pst && pst.readied && !pst.reactionUsed){
+      const w = p.equip.weapon? weaponDef(p.equip.weapon) : null;
+      const range = p.wildShape? 5 : weaponRangeFt(w);
+      if(distFt(p,foe) <= range){
+        pst.readied = false; pst.reactionUsed = true;
+        log(`${esc(p.name)}'s readied attack triggers!`,"good");
+        performAttack(p, foe, null, {free:true});
+        await sleep(300);
+        if(checkCombatEnd()) return;
+      }
+    }
+  }
+}
 function endTurnEffects(a){
-  // end-of-turn saves for repeat-save conditions
+  // Sleep (2024) is two-stage: Incapacitated first, then Unconscious on a later failed save.
   for(const cond of [...a.conditions]){
+    if(cond.sleep===1){
+      const sv = a.isMonster? d20Test({bonus: saveBonusMonster(a,"wis"), dc: cond.dc}) : d20Test({bonus: saveBonus(a,"wis"), dc: cond.dc});
+      if(sv.success){ removeCondition(a, cond.name); log(`${esc(a.name)} shakes off the sleep spell (save ${sv.total}).`,"good"); }
+      else { removeCondition(a, cond.name); addCondition(a, "Unconscious", {sleep:2, source: cond.source, rounds:10}); log(`${esc(a.name)} sinks into true sleep — <b>Unconscious</b>.`,"bad"); }
+      continue;
+    }
     if(cond.repeatSave){
-      const sv = a.isMonster? d20Test({bonus: saveBonusMonster(a,cond.repeatSave), dc: cond.dc}) : d20Test({bonus: saveBonus(a,cond.repeatSave), dc: cond.dc});
+      const sv = a.isMonster? d20Test({bonus: saveBonusMonster(a,cond.repeatSave), dc: cond.dc}) : d20Test({bonus: saveBonus(a,cond.repeatSave)+blessDie(a), dc: cond.dc});
       if(sv.success){ removeCondition(a, cond.name); log(`${esc(a.name)} shakes off ${cond.name} (save ${sv.total}).`,"good"); }
     }
     if(cond.expires==="turnEnd") removeCondition(a, cond.name);
+    if(typeof cond.rounds==="number"){ cond.rounds--; if(cond.rounds<=0){ removeCondition(a, cond.name); log(`${esc(a.name)}: ${cond.name} ends.`,"sys"); } }
   }
   if(a.isMonster && a.conditions.some(x=>x.name==="Sapped")) removeCondition(a,"Sapped");
 }
 function addCondition(a, name, opts={}){
   if(a.conditions.some(x=>x.name===name)) return;
   if(a.immune && a.immune.includes(name.toLowerCase())) return;
+  if(name==="Poisoned" && a.immune && a.immune.includes("poison")) return; // condition immunity tracks the damage type for undead
+  if((name==="Charmed"||name==="Frightened") && a.raging) return; // Mindless Rage
+  if(name==="Frightened" && a.conditions.some(x=>x.name==="Heroism")) return; // Heroism prevents Frightened
   a.conditions.push(Object.assign({name}, opts));
+  // Concentration ends if the creature becomes Incapacitated (Paralyzed/Stunned/Unconscious include it)
+  if(["Incapacitated","Paralyzed","Stunned","Unconscious"].includes(name) && a.concentrating) endConcentration(a);
+  // Exhaustion level 6 is death
+  if(name==="Exhaustion" && (opts.level||1)>=6 && !a.isMonster){ a.dead = true; a.downed = false; log(`<b>${esc(a.name)} succumbs to Exhaustion.</b>`,"bad"); }
 }
 function removeCondition(a, name){ a.conditions = a.conditions.filter(x=>x.name!==name); }
 function hasCond(a,name){ return a.conditions.some(x=>x.name===name); }
 function saveBonusMonster(m, ab){
   let b = modOf(m.ab[ab]);
+  if((m.saveProf||[]).includes(ab)) b += monsterPB(m); // 2025 blocks print proficient saves separately
   return b;
 }
 async function deathSaveTurn(c){
+  if(c.deathSaves.s>=3 && c.deathSaves.f<3){ // Stable: death saves stop until the creature takes damage again
+    log(`${esc(c.name)} is stable and rests, unconscious.`,"sys");
+    refreshAll(); await sleep(400); if(checkCombatEnd()) return; nextTurn(); return;
+  }
   const r = rollDie(20);
-  if(r===20){ c.hp = 1; c.downed=false; c.deathSaves={s:0,f:0}; log(`<b>${esc(c.name)}</b> rolls a natural 20 on a death save — back up with 1 HP!`,"good"); refreshAll(); renderCombatBar(); return; }
+  const eff = r + exhaustPen(c); // Exhaustion penalises every D20 Test, death saves included
+  if(r===20){ c.hp = 1; c.downed=false; c.deathSaves={s:0,f:0}; removeCondition(c,"Unconscious"); log(`<b>${esc(c.name)}</b> rolls a natural 20 on a death save — back up with 1 HP!`,"good"); refreshAll(); renderCombatBar(); return; }
   if(r===1){ c.deathSaves.f += 2; log(`${esc(c.name)} death save: natural 1 — two failures! (${c.deathSaves.s}✓ / ${c.deathSaves.f}✗)`,"bad"); }
-  else if(r>=10){ c.deathSaves.s++; log(`${esc(c.name)} death save: ${r} — success (${c.deathSaves.s}✓ / ${c.deathSaves.f}✗).`,"sys"); }
-  else { c.deathSaves.f++; log(`${esc(c.name)} death save: ${r} — failure (${c.deathSaves.s}✓ / ${c.deathSaves.f}✗).`,"bad"); }
+  else if(eff>=10){ c.deathSaves.s++; log(`${esc(c.name)} death save: ${r}${exhaustPen(c)?` (${eff} with Exhaustion)`:""} — success (${c.deathSaves.s}✓ / ${c.deathSaves.f}✗).`,"sys"); }
+  else { c.deathSaves.f++; log(`${esc(c.name)} death save: ${r}${exhaustPen(c)?` (${eff} with Exhaustion)`:""} — failure (${c.deathSaves.s}✓ / ${c.deathSaves.f}✗).`,"bad"); }
   if(c.deathSaves.f>=3){
     c.dead = true; log(`<b>${esc(c.name)} has died.</b> The Dawn may yet intervene...`,"bad");
   } else if(c.deathSaves.s>=3){
@@ -858,6 +1068,7 @@ function checkCombatEnd(){
 }
 function combatVictory(){
   COMBAT.over = true;
+  G.clock = (G.clock||8) + 1; // a fight takes time; the world clock is what gates Long Rests
   const enc = COMBAT.enc;
   const xpEach = Math.max(1, Math.round(COMBAT.xpPool / Math.max(1,livingParty().length)));
   log(`<b>Victory!</b>`,"good");
@@ -866,7 +1077,7 @@ function combatVictory(){
   const loot = enc.loot||{gold:0,items:[]};
   if(loot.gold){ G.gold += loot.gold; log(`Loot: +${loot.gold} gold.`,"good"); }
   for(const it of (loot.items||[])){ addItem(it); log(`Loot: <b>${esc(itemName(it))}</b>.`,"good"); }
-  for(const c of G.party){ c.concentrating=null; c.concTarget=null; c.raging=false; }
+  for(const c of G.party){ c.concentrating=null; c.concTarget=null; c.raging=false; c.shieldActive=false; c.conditions = c.conditions.filter(x=>["Exhaustion","Poisoned"].includes(x.name)); }
   COMBAT = null;
   $("combat-bar").style.display="none";
   awardXp(xpEach);
@@ -887,7 +1098,8 @@ function combatDefeat(){
 // ---------- Movement in combat ----------
 function moveActorTo(a, x, y){
   const st = actorState(a);
-  const reach = bfs(curMap, a.x, a.y, Math.floor(st.moveLeft/5), a.uid);
+  if(occupied(x,y,a.uid)) return false; // you can pass through an ally's space, but not end there
+  const reach = bfs(curMap, a.x, a.y, Math.floor(st.moveLeft/5), a.uid, a.isMonster);
   const d = reach.get(x+","+y);
   if(d==null) return false;
   // opportunity attacks: leaving a foe's reach
@@ -903,6 +1115,14 @@ function moveActorTo(a, x, y){
   }
   st.moveLeft -= d*5;
   a.x = x; a.y = y;
+  // Spirit Guardians also bites when a creature enters the emanation (once per turn)
+  for(const g of COMBAT.actors){
+    if(g.dead||g===a) continue;
+    if(g.concentrating==="spirit_guardians" && a.isMonster!==g.isMonster && distFt(a,g)<=15 && a._sgHitMark !== COMBAT.round+":"+g.uid){
+      a._sgHitMark = COMBAT.round+":"+g.uid;
+      spiritGuardiansHit(a, g);
+    }
+  }
   refreshAll();
   return true;
 }
@@ -910,30 +1130,31 @@ function moveActorTo(a, x, y){
 // ---------- Weapon attacks ----------
 function attackAdvantage(att, def, w){
   let adv = false, dis = false;
-  const melee = !w.ranged;
-  if(hasCond(def,"Prone")){ if(melee) adv=true; else dis=true; }
+  // Prone: Advantage if the ATTACKER is within 5 ft of the target, Disadvantage otherwise (not weapon-based)
+  if(hasCond(def,"Prone")){ if(distFt(att,def)<=5) adv=true; else dis=true; }
   if(hasCond(att,"Prone")) dis=true;
   if(hasCond(att,"Poisoned")) dis=true;
   if(hasCond(att,"Restrained")) dis=true;
   if(hasCond(def,"Restrained")||hasCond(def,"Paralyzed")||hasCond(def,"Stunned")||hasCond(def,"Unconscious")||hasCond(def,"Blinded")) adv=true;
-  if(hasCond(att,"Blinded")) dis=true;
+  if(hasCond(att,"Blinded") && !(att.classId==="warlock" && hasInvocation(att,"devils_sight") && hasCond(def,"Blinded"))) dis=true;
   if(hasCond(att,"Frightened")) dis=true;
   if(hasCond(def,"FaerieFired")) adv=true;
   if(hasCond(def,"Guided")) adv=true;
-  if(actorState(att).dodging===undefined) {}
   if(defenderDodging(def)) dis=true;
   if(hasCond(att,"Invisible")) adv=true;
+  if(hasCond(def,"Invisible")) dis=true; // attacks against an Invisible creature have Disadvantage
+  // Grappled: Disadvantage on attacks against anyone other than the grappler
+  const grap = att.conditions.find(x=>x.name==="Grappled");
+  if(grap && grap.grappler && grap.grappler!==def.uid) dis=true;
   if(att.isMonster && MONSTERS[att.mid].packTactics){
     if(COMBAT.actors.some(o=>o!==att&&o.isMonster&&!o.dead&&distFt(o,def)<=5)) adv=true;
   }
   const st = actorState(att);
   if(st.vexTarget===def.uid) adv=true;
   if(st.reckless) adv=true;
-  if(!att.isMonster && att.classId==="barbarian"){ /* reckless handled via toggle */ }
-  if(def.isMonster===false || true){
-    // attacks against a reckless barbarian have advantage
-    const dst = COMBAT.state[def.uid]; if(dst && dst.recklessUsed) adv=true;
-  }
+  if(st.steadyAim) adv=true;
+  // attacks against a reckless barbarian have advantage
+  const dst = COMBAT.state[def.uid]; if(dst && dst.recklessUsed) adv=true;
   if(st.sapped){ dis=true; st.sapped=false; }
   if(hasCond(att,"Mocked")){ dis=true; removeCondition(att,"Mocked"); }
   // ranged in melee
@@ -947,7 +1168,7 @@ function performAttack(att, def, weaponOverride, opts={}){
   let w, atkBonus, dmgMod, ability;
   if(att.isMonster){
     const atkDef = weaponOverride || att.atk[0];
-    w = {name:atkDef.name, dmg:atkDef.dmg, type:atkDef.type, ranged:!!atkDef.ranged, props:[], mastery:null};
+    w = {name:atkDef.name, dmg:atkDef.dmg, type:atkDef.type, ranged:!!atkDef.ranged, props:[], mastery:null, advRider:atkDef.advRider||null, extra:atkDef.extra||null};
     atkBonus = atkDef.bonus; dmgMod = atkDef.mod; ability = "str";
     if(atkDef.multi && !opts.isOA){ for(let i=0;i<atkDef.multi;i++){ if(def.hp>0||def.downed) performAttack(att,def,atkDef,{isOA:true, noMulti:true}); } return; }
   } else {
@@ -956,96 +1177,132 @@ function performAttack(att, def, weaponOverride, opts={}){
     else if(!wid){ w = {name:"Unarmed Strike", dmg:[1,0], type:"bludgeoning", props:[], mastery:null}; const ub = weaponAttackBonus(att,{cat:"simple",props:[],ranged:false}); atkBonus = ub.bonus; dmgMod = amod(att, att.classId==="monk"?"dex":"str"); ability = ub.ability; if(att.classId==="monk"){ w.dmg = [1, att.level>=11?10: att.level>=5?8:6]; } }
     else { w = weaponDef(wid); const ub = weaponAttackBonus(att, w); atkBonus = ub.bonus; dmgMod = amod(att, ub.ability) + (w.bonus||0); ability = ub.ability; }
   }
-  const range = w.ranged? (w.name.includes("Longbow")?150: w.name.includes("Crossbow")?80:60) : (w.props.includes("Reach")?10:5);
+  // Thrown weapons work at range: normal range from the property, Disadvantage beyond it.
+  const thrownN = thrownNormalFt(w);
+  const isThrownRanged = !w.ranged && thrownN>0 && distFt(att,def)>5;
+  const effW = isThrownRanged? Object.assign({}, w, {ranged:true}) : w;
+  const range = weaponRangeFt(w);
   const d = distFt(att,def);
-  if(d > range + (w.ranged? 40:0)) { log(`${esc(att.name)} is out of range.`,"sys"); return false; }
-  let adv = attackAdvantage(att, def, w);
+  if(d > range) { log(`${esc(att.name)} is out of range.`,"sys"); return false; }
+  if(effW.ranged && !hasLoS(att,def)){ log(`${esc(att.name)} has no line of sight to ${esc(def.name)} (a wall blocks the shot).`,"sys"); return false; }
+  // Goblin Warrior — Redirect Attack (Reaction): swap with a nearby ally, who takes the attack instead
+  if(def.isMonster && def.redirectAttack && !opts.isOA){
+    const dst = actorState(def);
+    if(dst && !dst.reactionUsed){
+      const ally = COMBAT.actors.find(o=>o.isMonster&&!o.dead&&o!==def&&distFt(o,def)<=5);
+      if(ally){ dst.reactionUsed = true; const gx=def.x, gy=def.y; def.x=ally.x; def.y=ally.y; ally.x=gx; ally.y=gy; log(`<b>Redirect Attack!</b> The goblin swaps places with ${esc(ally.name)}, who takes the blow instead.`,"bad"); def = ally; }
+    }
+  }
+  let adv = attackAdvantage(att, def, effW);
+  if(isThrownRanged && d > thrownN) adv = adv==="adv"? null : "dis"; // long range
   if(opts.advOverride!==undefined) adv = opts.advOverride;
   // Shield spell reaction (defender)
   const critRange = (!att.isMonster && att.classId==="fighter" && att.subclass)? 19 : (att.isMonster&&MONSTERS[att.mid].critRange)||20;
-  const defAC = def.isMonster? def.ac : armorClass(def);
-  let r = d20Test({bonus: atkBonus, adv, critRange});
-  // Bardic inspiration auto-spend on a near miss for party
+  let defAC = (def.isMonster? def.ac + (def.shieldActive?5:0) : armorClass(def)) + (effW.ranged? coverBonus(att,def):0);
+  let atkTotalBonus = atkBonus + (att.isMonster? 0 : blessDie(att)) + exhaustPen(att);
+  let r = d20Test({bonus: atkTotalBonus, adv, critRange});
+  if(st.vexTarget===def.uid) st.vexTarget = null; // Vex is consumed by this attack
+  // Bardic inspiration auto-spend on a near miss for party (any failed D20 Test)
   if(!att.isMonster && !r.crit && r.total < defAC && att.inspiredDie){
     const add = rollDie(att.inspiredDie); r.total += add; log(`${esc(att.name)} uses Bardic Inspiration (+${add}) → ${r.total}.`,"good"); att.inspiredDie = 0;
   }
   if(!att.isMonster && att.inspiration && !r.crit && r.total < defAC){
-    att.inspiration = false; const r2 = d20Test({bonus: atkBonus, adv, critRange}); log(`${esc(att.name)} — Heroic Inspiration reroll: ${r2.total}.`,"good"); r = r2;
+    att.inspiration = false; const r2 = d20Test({bonus: atkTotalBonus, adv, critRange}); log(`${esc(att.name)} — Heroic Inspiration reroll: ${r2.total}.`,"good"); r = r2;
   }
   const hit = r.crit || (!r.fumble && r.total >= defAC);
   const rollTxt = r.rolls.length>1? `[${r.rolls.join(",")}]→${r.kept}` : `${r.kept}`;
   if(!hit){
-    log(`${esc(att.name)} attacks ${esc(def.name)} with ${esc(w.name)}: ${rollTxt} ${fmtMod(atkBonus)} = ${r.total} vs AC ${defAC} — <b>miss</b>.`,"sys");
+    log(`${esc(att.name)} attacks ${esc(def.name)} with ${esc(w.name)}: ${rollTxt} ${fmtMod(atkTotalBonus)} = ${r.total} vs AC ${defAC} — <b>miss</b>.`,"sys");
     // Graze mastery
-    if(!att.isMonster && w.mastery==="Graze" && hasMastery(att) && !w.ranged){
+    if(!att.isMonster && w.mastery==="Graze" && hasMasteryFor(att,w) && !w.ranged){
       const g = Math.max(0, amod(att, ability));
-      if(g>0){ log(`Graze: ${g} ${w.type} damage anyway.`,"sys"); applyDamage(def, g, w.type, att); }
+      if(g>0){ log(`Graze: ${g} ${w.type} damage anyway.`,"sys"); applyDamage(def, g, w.type, att, {weapon:w}); }
     }
-    // enemy Shield spell check happens on hit only; done below
     afterAttack(att, def, w, false);
     return false;
   }
-  // Shield spell: if defender is a caster with Shield ready, it may turn the hit into a miss
+  // Shield spell: +5 AC until the start of the defender's next turn — it may turn this hit into a miss
   if(!r.crit && canCastShield(def)){
     castShieldReaction(def);
-    const newAC = defAC + 5;
-    if(r.total < newAC){ log(`${esc(def.name)} casts <b>Shield</b> — AC ${newAC} — the attack glances off!`,"good"); afterAttack(att,def,w,false); return false; }
+    defAC = (def.isMonster? def.ac + 5 : armorClass(def)) + (effW.ranged? coverBonus(att,def):0);
+    log(`${esc(def.name)} casts <b>Shield</b> (AC ${defAC} until their next turn).`,"good");
+    if(r.total < defAC){ log(`The attack glances off the Shield!`,"good"); afterAttack(att,def,w,false); return false; }
   }
+  // A hit within 5 ft of a Paralyzed or Unconscious creature is automatically a critical hit
+  const dmgCrit = r.crit || ((hasCond(def,"Paralyzed")||hasCond(def,"Unconscious")||def.downed) && d<=5);
   // damage
   let [dn, dd] = w.dmg;
-  let rolls = rollDice(r.crit? dn*2:dn, dd);
+  if(opts.noAbilityMod) dmgMod = (w.bonus||0); // Light-property extra attacks don't add the ability modifier (no Two-Weapon Fighting style here)
+  let rolls = rollDice(dmgCrit? dn*2:dn, dd);
   let dmg = dd===0? 1 + dmgMod : rolls.tot + dmgMod;
-  let parts = [`${r.crit?dn*2:dn}d${dd||1}[${rolls.rolls.join("+")}]${dmgMod?fmtMod(dmgMod):""}`];
-  if(att.isMonster && MONSTERS[att.mid].martialAdvantage && COMBAT.actors.some(o=>o!==att&&o.isMonster&&!o.dead&&distFt(o,def)<=5)){
-    const ex = rollDice(r.crit?2:1,6); dmg += ex.tot; parts.push(`martial advantage ${ex.tot}`);
-  }
+  let parts = [`${dmgCrit?dn*2:dn}d${dd||1}[${rolls.rolls.join("+")}]${dmgMod?fmtMod(dmgMod):""}`];
+  if(att.isMonster && w.advRider && adv==="adv"){ const ex = rollDice(dmgCrit? w.advRider[0]*2 : w.advRider[0], w.advRider[1]); dmg += ex.tot; parts.push(`advantage rider ${ex.tot}`); }
+  if(att.isMonster && w.extra){ for(const exDef of w.extra){ const ex = rollDice(dmgCrit? exDef.dmg[0]*2 : exDef.dmg[0], exDef.dmg[1]); dmg += ex.tot; parts.push(`${exDef.type} ${ex.tot}`); } }
+  if(att.isMonster && att.mid==="bugbear" && COMBAT.round===0 && COMBAT.surprisedSide==="party"){ const ex = rollDice(dmgCrit?4:2,6); dmg += ex.tot; parts.push(`Surprise Attack ${ex.tot}`); }
   if(!att.isMonster){
     if(att.raging && !w.ranged && ability==="str"){ const rb = CLASSES.barbarian.rageDmg(att.level); dmg += rb; parts.push(`rage +${rb}`); }
-    if(att.concentrating==="hunters_mark" && att.concTarget===def.uid){ const ex = rollDice(r.crit?2:1,6); dmg += ex.tot; parts.push(`Hunter's Mark ${ex.tot}`); }
-    if(att.concentrating==="hex" && att.concTarget===def.uid){ const ex = rollDice(r.crit?2:1,6); dmg += ex.tot; parts.push(`Hex ${ex.tot} necrotic`); }
-    if(att.divineFavor){ const ex = rollDice(r.crit?2:1,4); dmg += ex.tot; parts.push(`Divine Favor ${ex.tot}`); }
-    // Sneak attack
+    if(att.concentrating==="hunters_mark" && att.concTarget===def.uid){ const ex = rollDice(dmgCrit?2:1,6); dmg += ex.tot; parts.push(`Hunter's Mark ${ex.tot}`); }
+    if(att.concentrating==="hex" && att.concTarget===def.uid){ const ex = rollDice(dmgCrit?2:1,6); dmg += ex.tot; parts.push(`Hex ${ex.tot} necrotic`); }
+    if(att.divineFavor){ const ex = rollDice(dmgCrit?2:1,4); dmg += ex.tot; parts.push(`Divine Favor ${ex.tot}`); }
+    // Sneak attack (once per turn; flags now reset each turn via freshTurnState)
     if(att.classId==="rogue" && (w.props.includes("Finesse")||w.ranged) && !st.sneakUsed){
-      const allyAdj = G.party.some(o=>o!==att&&!o.dead&&!o.downed&&distFt(o,def)<=5);
-      if(adv==="adv" || allyAdj){ const sd = sneakDice(att); const ex = rollDice(r.crit? sd*2:sd, 6); dmg += ex.tot; parts.push(`Sneak Attack ${ex.tot}`); st.sneakUsed = true; }
+      const allyAdj = COMBAT.actors.some(o=>o!==att&&o!==def&&o.isMonster!==att.isMonster&&!o.dead&&!o.downed&&distFt(o,def)<=5);
+      if(adv==="adv" || allyAdj){ const sd = sneakDice(att); const ex = rollDice(dmgCrit? sd*2:sd, 6); dmg += ex.tot; parts.push(`Sneak Attack ${ex.tot}`); st.sneakUsed = true; }
     }
     // Colossus Slayer (Hunter ranger)
-    if(att.classId==="ranger" && att.subclass && !st.colossusUsed && def.hp < def.maxHp){ const ex = rollDice(r.crit?2:1,8); dmg += ex.tot; parts.push(`Colossus Slayer ${ex.tot}`); st.colossusUsed = true; }
-    // Frenzy (Berserker)
-    if(att.classId==="barbarian" && att.subclass && att.raging && !st.frenzyUsed){ const ex = rollDice(2,6); dmg += ex.tot; parts.push(`Frenzy ${ex.tot}`); st.frenzyUsed = true; }
-    if(hasFeat(att,"savage_attacker") && !st.savageUsed){ const alt = rollDice(r.crit?dn*2:dn, dd).tot + (dd===0?1:dmgMod); if(alt>rolls.tot+dmgMod){ dmg += (alt-(rolls.tot+dmgMod)); parts.push(`Savage Attacker reroll`);} st.savageUsed = true; }
+    if(att.classId==="ranger" && att.subclass && !st.colossusUsed && def.hp < def.maxHp){ const ex = rollDice(dmgCrit?2:1,8); dmg += ex.tot; parts.push(`Colossus Slayer ${ex.tot}`); st.colossusUsed = true; }
+    // Frenzy (Berserker) — its dice double on a crit like every other damage die
+    if(att.classId==="barbarian" && att.subclass && att.raging && !st.frenzyUsed){ const ex = rollDice(dmgCrit?4:2,6); dmg += ex.tot; parts.push(`Frenzy ${ex.tot}`); st.frenzyUsed = true; }
+    if(hasFeat(att,"savage_attacker") && !st.savageUsed){ const alt = rollDice(dmgCrit?dn*2:dn, dd).tot + (dd===0?1:dmgMod); if(alt>rolls.tot+dmgMod){ dmg += (alt-(rolls.tot+dmgMod)); parts.push(`Savage Attacker reroll`);} st.savageUsed = true; }
   }
   dmg = Math.max(0,dmg);
-  log(`${esc(att.name)} attacks ${esc(def.name)} with ${esc(w.name)}: ${rollTxt} ${fmtMod(atkBonus)} = ${r.total} vs AC ${defAC} — <b>${r.crit?"CRITICAL HIT":"hit"}</b> for <b>${dmg}</b> ${w.type} damage. <span class="dim">(${parts.join("; ")})</span>`, r.crit?"good":"sys");
-  applyDamage(def, dmg, w.type, att, {crit:r.crit, weapon:w});
+  // Defender reactions that reduce damage: Deflect Attacks (Monk L3), Uncanny Dodge (Rogue L5)
+  if(!def.isMonster && !def.downed && dmg>0){
+    const dst = actorState(def);
+    if(dst && !dst.reactionUsed && def.classId==="monk" && def.level>=3){
+      const red = rollDie(10) + amod(def,"dex") + def.level;
+      dmg = Math.max(0, dmg - red); dst.reactionUsed = true;
+      log(`Deflect Attacks! ${esc(def.name)} reduces the damage by ${red} (to ${dmg}).`,"good");
+    } else if(dst && !dst.reactionUsed && def.classId==="rogue" && def.level>=5){
+      dmg = Math.floor(dmg/2); dst.reactionUsed = true;
+      log(`Uncanny Dodge! ${esc(def.name)} halves the damage (to ${dmg}).`,"good");
+    }
+  }
+  log(`${esc(att.name)} attacks ${esc(def.name)} with ${esc(w.name)}: ${rollTxt} ${fmtMod(atkTotalBonus)} = ${r.total} vs AC ${defAC} — <b>${dmgCrit?"CRITICAL HIT":"hit"}</b> for <b>${dmg}</b> ${w.type} damage. <span class="dim">(${parts.join("; ")})</span>`, dmgCrit?"good":"sys");
+  applyDamage(def, dmg, w.type, att, {crit:dmgCrit, weapon:w});
   // on-hit riders
   if(def.hp>0 || def.downed!==undefined){
-    if(w.mastery && !att.isMonster && hasMastery(att)) applyMastery(att, def, w, ability);
+    if(w.mastery && !att.isMonster && hasMasteryFor(att,w)) applyMastery(att, def, w, ability);
     if(att.isMonster){
       const atkDef = att.atk.find(a=>a.name===w.name);
       if(atkDef && atkDef.trip) monsterSaveOr(def, atkDef.trip, "Prone");
       if(atkDef && atkDef.paralyze) monsterSaveOr(def, atkDef.paralyze, "Paralyzed");
       if(atkDef && atkDef.drain && !def.isMonster){
-        const sv = d20Test({bonus: saveBonus(def,"con"), dc:13});
+        const sv = d20Test({bonus: saveBonus(def,"con")+blessDie(def), dc:13});
         if(!sv.success){ def.maxHpReduction = (def.maxHpReduction||0) + dmg; if(def.hp>maxHp(def)) def.hp = maxHp(def); log(`Life Drain! ${esc(def.name)}'s maximum HP is reduced by ${dmg} until a Long Rest.`,"bad"); }
       }
     }
   }
-  if(!att.isMonster && att.classId==="monk" && !st.stunUsed && att.res.focus>0 && def.isMonster && !def.dead){
-    // Stunning Strike offered automatically vs tough foes? Keep manual via toggle button; skip here.
+  // Stunning Strike (Monk L5): armed from the combat bar; 1 Focus, Con save or Stunned
+  if(!att.isMonster && att.classId==="monk" && att.level>=5 && st.stunArmed && !st.stunUsed && (att.res.focus||0)>0 && !def.dead){
+    att.res.focus--; st.stunUsed = true; st.stunArmed = false;
+    const dc = 8 + amod(att,"wis") + pb(att);
+    const sv = def.isMonster? d20Test({bonus: saveBonusMonster(def,"con"), dc}) : d20Test({bonus: saveBonus(def,"con"), dc});
+    if(!sv.success){ addCondition(def,"Stunned",{rounds:2, source:att.uid}); log(`<b>Stunning Strike!</b> ${esc(def.name)} is Stunned (save ${sv.total} vs ${dc}).`,"good"); }
+    else log(`${esc(def.name)} resists Stunning Strike (save ${sv.total} vs ${dc}).`,"sys");
   }
   afterAttack(att, def, w, true);
-  // Paladin smite prompt
-  if(!att.isMonster && att.classId==="paladin" && !w.ranged && def.isMonster && !def.dead && (slotsLeftAny(att) || !att.smiteFreeUsed)){
-    COMBAT.awaiting = {type:"smite", att, def};
+  // Paladin smite prompt (Bonus Action, once per turn)
+  if(!att.isMonster && att.classId==="paladin" && att.level>=2 && !w.ranged && !st.smiteUsed && !st.bonusUsed && def.isMonster && !def.dead && (slotsLeftAny(att) || !att.smiteFreeUsed)){
+    COMBAT.awaiting = {type:"smite", att, def, crit:dmgCrit};
     renderCombatBar();
   }
-  // Nick mastery: extra offhand attack as part of the Attack action
-  if(!att.isMonster && w.mastery==="Nick" && att.equip.offhand && !st.nickUsed && def.isMonster && !def.dead){
+  // Nick mastery: extra offhand attack as part of the Attack action (no ability mod to damage)
+  if(!att.isMonster && w.mastery==="Nick" && hasMasteryFor(att,w) && att.equip.offhand && !st.nickUsed && def.isMonster && !def.dead){
     st.nickUsed = true;
     const ow = weaponDef(att.equip.offhand);
     log(`Nick: a second quick strike with the ${esc(ow.name)}.`,"sys");
-    performAttack(att, def, att.equip.offhand, {free:true});
+    performAttack(att, def, att.equip.offhand, {free:true, noAbilityMod:true});
   }
   return true;
 }
@@ -1057,9 +1314,12 @@ function monsterSaveOr(target, spec, condName){
   else log(`${esc(target.name)} resists (${sv.total} vs ${spec.dc}).`,"sys");
 }
 function applyMastery(att, def, w, ability){
+  const st = actorState(att);
+  if(st.masteryUsed) return; // Weapon Mastery properties apply once per turn (2024)
+  if(w.mastery!=="Cleave") st.masteryUsed = true;
   const dc = 8 + amod(att,ability) + pb(att);
   switch(w.mastery){
-    case "Topple": { const sv = d20Test({bonus: def.isMonster? saveBonusMonster(def,"con") : saveBonus(def,"con"), dc}); if(!sv.success && !hasCond(def,"Prone")){ addCondition(def,"Prone"); log(`Topple! ${esc(def.name)} is knocked <b>Prone</b> (save ${sv.total} vs ${dc}).`,"good"); } break; }
+    case "Topple": { const sv = d20Test({bonus: def.isMonster? saveBonusMonster(def,"con") : saveBonus(def,"con")+blessDie(def), dc}); if(!sv.success && !hasCond(def,"Prone")){ addCondition(def,"Prone"); log(`Topple! ${esc(def.name)} is knocked <b>Prone</b> (save ${sv.total} vs ${dc}).`,"good"); } break; }
     case "Push": { // move 10 ft away if space
       const dx = Math.sign(def.x-att.x), dy = Math.sign(def.y-att.y);
       for(let i=0;i<2;i++){ const nx=def.x+dx, ny=def.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,def.uid)){ def.x=nx; def.y=ny; } else break; }
@@ -1079,10 +1339,16 @@ function afterAttack(att, def, w, hit){
 }
 function applyDamage(target, amount, type, source, opts={}){
   let amt = amount;
+  // Taking damage wakes a sleeper and ends Turn Undead's hold
+  if(amt>0){
+    if(target.conditions.some(x=>x.sleep)){ target.conditions = target.conditions.filter(x=>!x.sleep); log(`${esc(target.name)} is jolted awake!`,"sys"); }
+    if(target.conditions.some(x=>x.turned)){ target.conditions = target.conditions.filter(x=>!x.turned); log(`${esc(target.name)} is no longer turned (it took damage).`,"sys"); }
+  }
   // monster resistances
   if(target.isMonster){
     if(target.immune.includes(type)) { log(`${esc(target.name)} is immune to ${type}.`,"sys"); amt = 0; }
     else if(target.resist.includes(type)){ amt = Math.floor(amt/2); log(`${esc(target.name)} resists ${type} (halved).`,"sys"); }
+    else if(target.resistNonmagic && ["bludgeoning","piercing","slashing"].includes(type) && !opts.spell && !(opts.weapon && ((opts.weapon.bonus||0)>0 || (source && !source.isMonster && source.classId==="monk" && source.level>=6)))){ amt = Math.floor(amt/2); log(`${esc(target.name)} resists non-magical ${type} (halved).`,"sys"); }
     else if(target.vuln && target.vuln.includes(type)){ amt *= 2; log(`${esc(target.name)} is vulnerable to ${type} (doubled)!`,"good"); }
   } else {
     if(target.raging && ["bludgeoning","piercing","slashing"].includes(type)){ amt = Math.floor(amt/2); }
@@ -1097,16 +1363,18 @@ function applyDamage(target, amount, type, source, opts={}){
     if(target.tempHp>0){ const absorbed = Math.min(target.tempHp, amt); target.tempHp -= absorbed; amt -= absorbed; }
   }
   if(target.downed && !target.isMonster && amt>0){
+    if(amt >= maxHp(target)){ target.dead = true; target.deathSaves.f = 3; log(`<b>Massive damage!</b> ${esc(target.name)} is killed outright.`,"bad"); refreshAll(); return; }
+    target.deathSaves.s = 0; // taking damage un-stabilises: death saves resume
     target.deathSaves.f += opts.crit? 2:1;
     log(`${esc(target.name)} takes damage while down — a death save failure! (${target.deathSaves.s}✓ / ${target.deathSaves.f}✗)`,"bad");
     if(target.deathSaves.f>=3){ target.dead = true; log(`<b>${esc(target.name)} has died.</b>`,"bad"); }
     refreshAll(); return;
   }
   target.hp -= amt;
-  // concentration check
-  if(!target.isMonster && target.concentrating && amt>0){
+  // concentration check — for EVERY concentrating creature, monsters included
+  if(target.concentrating && amt>0 && !target.dead){
     const dc = Math.max(10, Math.floor(amt/2));
-    const sv = d20Test({bonus: saveBonus(target,"con"), dc});
+    const sv = target.isMonster? d20Test({bonus: saveBonusMonster(target,"con"), dc}) : d20Test({bonus: saveBonus(target,"con")+blessDie(target), dc});
     if(!sv.success){ log(`${esc(target.name)} loses concentration on ${SPELLS[target.concentrating].name} (save ${sv.total} vs ${dc}).`,"bad"); endConcentration(target); }
   }
   if(target.isMonster && target.hp<=0){
@@ -1116,33 +1384,53 @@ function applyDamage(target, amount, type, source, opts={}){
       if(sv.success){ target.hp = 1; log(`Undead Fortitude! The zombie stays up (save ${sv.total}).`,"bad"); refreshAll(); return; }
     }
     target.hp = 0; target.dead = true;
+    // a dead grappler releases its hold
+    for(const a of COMBAT.actors) a.conditions = a.conditions.filter(x=>!(x.name==="Grappled" && x.grappler===target.uid));
     log(`<b>${esc(target.name)} is defeated!</b>`,"good");
   }
   if(!target.isMonster && target.hp<=0){
+    const leftover = -target.hp;
     target.hp = 0;
-    if(target.speciesId==="orc" && !target.relenUsed){ target.relenUsed = true; target.hp = 1; log(`Relentless Endurance! ${esc(target.name)} drops to 1 HP instead.`,"good"); }
+    if(leftover >= maxHp(target)){ target.dead = true; log(`<b>Massive damage!</b> ${esc(target.name)} is killed outright.`,"bad"); }
+    else if(target.speciesId==="orc" && !target.relenUsed){ target.relenUsed = true; target.hp = 1; log(`Relentless Endurance! ${esc(target.name)} drops to 1 HP instead.`,"good"); }
     else {
+      if(target.concentrating) endConcentration(target); // dropping to 0 HP ends concentration, with full cleanup
       target.downed = true; target.deathSaves = {s:0,f:0};
-      target.concentrating = null;
+      addCondition(target, "Unconscious");
       log(`<b>${esc(target.name)} is down!</b> Death saves begin next turn. Healing brings them back.`,"bad");
     }
   }
   refreshAll();
 }
 function endConcentration(c){
-  const sp = c.concentrating; c.concentrating = null; c.concTarget = null; c.divineFavor = false;
-  if(sp==="bless"||sp==="faerie_fire"||sp==="haste"){
-    for(const a of COMBAT? COMBAT.actors: G.party){ if(a.conditions) a.conditions = a.conditions.filter(x=>x.source!==c.uid); }
+  const sp = c.concentrating; if(!sp) { c.concTarget = null; return; }
+  c.concentrating = null; c.concTarget = null;
+  // Every condition this caster sourced ends (Bless, Faerie Fire, Hold Person, Web, Darkness, Sleep, Haste...)
+  const all = COMBAT? COMBAT.actors : G.party;
+  for(const a of all){
+    if(!a.conditions) continue;
+    const hasted = a.conditions.find(x=>x.source===c.uid && x.name==="Hasted");
+    a.conditions = a.conditions.filter(x=>x.source!==c.uid);
+    if(hasted){ // Haste's lethargy: the target can't move or act until the end of its next turn
+      a.conditions.push({name:"Incapacitated", lethargy:true, rounds:1});
+      log(`${esc(a.name)} is overcome by lethargy as Haste ends.`,"bad");
+    }
   }
   if(sp==="spirit_guardians") removeCondition(c,"SpiritGuardians");
+  if(sp==="guidance" && G && G.guidanceFor) G.guidanceFor = null;
 }
 function canCastShield(a){
-  if(a.isMonster) return a.spells && a.spells.list.includes("shield") && a.slotsUsed< (a.spells.slots||0);
-  if(a.dead||a.downed) return false;
-  return a.spellsKnown && a.spellsKnown.includes("shield") && slotsLeft(a,1)>0 && !actorState(a).reactionUsed;
+  if(!a || a.dead || a.downed) return false;
+  const st = (typeof COMBAT!=="undefined" && COMBAT && COMBAT.state[a.uid]) || null;
+  if(st && st.reactionUsed) return false;
+  if(a.isMonster) return a.spells && a.spells.list.includes("shield") && monsterSlotAvailable(a,1);
+  return a.spellsKnown && a.spellsKnown.includes("shield") && slotsLeft(a,1)>0;
 }
 function castShieldReaction(a){
-  if(a.isMonster) a.slotsUsed++; else { useSlot(a,1); actorState(a).reactionUsed = true; }
+  if(a.isMonster) useMonsterSlot(a,1); else useSlot(a,1);
+  const st = (typeof COMBAT!=="undefined" && COMBAT && COMBAT.state[a.uid]) || null;
+  if(st) st.reactionUsed = true;
+  a.shieldActive = true; // +5 AC until the start of the caster's next turn (armorClass / defAC read this)
 }
 
 // Part 3b: spellcasting in combat, combat bar UI, canvas interaction.
@@ -1193,15 +1481,17 @@ drawMap = function(){ _drawMapBase(); drawCombatOverlay(); };
 function spellSaveDC(caster){ return caster.isMonster? caster.spells.dc : spellDC(caster); }
 function spellAttackBonusOf(caster){ return caster.isMonster? caster.spells.atkBonus : spellAtkBonus(caster); }
 function casterMod(caster){ return caster.isMonster? 3 : amod(caster, spellAbility(caster)); }
+function slotsLeftAnyAtLeast(c, lvl){ for(let l=lvl;l<=5;l++) if(slotsLeft(c,l)>0) return l; return 0; }
 function tryCounterspell(caster, spellId){
   // Returns true if the spell is countered. 2024: caster keeps the slot if countered.
+  if(caster._metaActive && caster._metaActive.id==="subtle") return false; // Subtle Spell can't be counterspelled
   const reactors = COMBAT.actors.filter(o=>!o.dead && o!==caster && o.isMonster!==caster.isMonster && !o.downed);
   for(const r of reactors){
-    const has = r.isMonster? (r.spells&&r.spells.list.includes("counterspell")&&r.slotsUsed<r.spells.slots) : (r.spellsKnown.includes("counterspell") && slotsLeft(r,3)>0 && !actorState(r).reactionUsed);
+    const has = r.isMonster? (r.spells&&r.spells.list.includes("counterspell")&&monsterSlotAvailable(r,3)) : (r.spellsKnown.includes("counterspell") && slotsLeftAnyAtLeast(r,3)>0 && !actorState(r).reactionUsed);
     if(!has) continue;
     if(distFt(r,caster)>60) continue;
     if(SPELLS[spellId].lvl<2 && Math.random()<0.5) continue; // don't waste it on trifles
-    if(r.isMonster) r.slotsUsed++; else { useSlot(r,3); actorState(r).reactionUsed=true; }
+    if(r.isMonster) useMonsterSlot(r,3); else { useSlot(r, slotsLeftAnyAtLeast(r,3)); actorState(r).reactionUsed=true; }
     const sv = d20Test({bonus: caster.isMonster? saveBonusMonster(caster,"con") : saveBonus(caster,"con"), dc: spellSaveDC(r)});
     log(`${esc(r.name)} casts <b>Counterspell</b>! ${esc(caster.name)} Con save ${sv.total} vs DC ${spellSaveDC(r)} — ${sv.success?"the spell holds!":"<b>the spell dissipates</b> (slot kept, 2024 rules)."}` , sv.success?"good":"bad");
     return !sv.success;
@@ -1210,10 +1500,25 @@ function tryCounterspell(caster, spellId){
 }
 function castSpell(caster, spellId, slotLvl, target, point){
   const sp = SPELLS[spellId];
-  if(!caster.isMonster && caster.concentrating && caster.concentrating!==spellId && sp.conc) endConcentration(caster);
-  if(tryCounterspell(caster, spellId)) return true; // action spent, slot kept
-  if(slotLvl>0 && !caster.isMonster) useSlot(caster, slotLvl);
-  if(caster.isMonster) caster.slotsUsed++;
+  // Metamagic (Sorcerer): the pick was stashed on the caster by pickSpell; spend the points now.
+  const meta = (!caster.isMonster && caster._meta)? caster._meta : null;
+  if(!caster.isMonster) caster._meta = null;
+  if(meta){
+    if((caster.res.sorcery||0) >= (METAMAGIC[meta.id]?.cost||0)){ caster.res.sorcery -= METAMAGIC[meta.id].cost; caster._metaActive = meta; }
+    else log(`Not enough Sorcery Points for ${METAMAGIC[meta.id].name} — the spell is cast plainly.`,"bad");
+    if(caster._metaActive){
+      if(meta.id==="heightened") caster._heightenedPending = true;
+      if(meta.id==="careful") caster._carefulActive = true;
+      if(meta.id==="empowered") caster._empoweredActive = true;
+    }
+  }
+  if(tryCounterspell(caster, spellId)){ caster._metaActive = null; caster._heightenedPending = false; caster._carefulActive = false; caster._empoweredActive = false; return true; } // action spent, slot kept (2024)
+  if(sp.lvl>0){
+    if(caster.isMonster){ if(!monsterSlotAvailable(caster, sp.lvl)){ log(`${esc(caster.name)} has no slot left for ${sp.name}.`,"sys"); caster._metaActive = null; return false; } useMonsterSlot(caster, sp.lvl); slotLvl = sp.lvl; }
+    else { useSlot(caster, slotLvl); const st = COMBAT && COMBAT.state[caster.uid]; if(st) st.slotSpellCast = true; }
+  }
+  // The old concentration ends only once the new spell actually takes effect.
+  if(caster.concentrating && caster.concentrating!==spellId && sp.conc) endConcentration(caster);
   const mod = casterMod(caster);
   const up = Math.max(0, slotLvl - sp.lvl);
   log(`${esc(caster.name)} casts <b>${sp.name}</b>${slotLvl?` (slot ${slotLvl})`:""}.`,"sys");
@@ -1224,49 +1529,90 @@ function castSpell(caster, spellId, slotLvl, target, point){
     const r = rFt/5;
     return COMBAT.actors.filter(o=>!o.dead && Math.hypot(o.x-cx,o.y-cy) <= r+0.01);
   };
+  const empoweredRoll = (n, d)=>{
+    const rr = rollDice(n, d);
+    if(caster._empoweredActive && !caster.isMonster){
+      let budget = Math.max(0, amod(caster,"cha")), tot = rr.tot;
+      rr.rolls = rr.rolls.map(v=>{ if(budget>0 && v <= d/2){ budget--; const nv = rollDie(d); tot += nv - v; return nv; } return v; });
+      rr.tot = tot; caster._empoweredActive = false;
+      log(`Empowered Spell: damage dice rerolled.`,"sys");
+    }
+    return rr;
+  };
   const dealSaveDamage = (t, diceArr, type, saveAb, halfOnSave)=>{
-    const sv = t.isMonster? d20Test({bonus: saveBonusMonster(t,saveAb)+(hasCond(t,"Blessed")?rollDie(4):0), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(t,saveAb)+(hasCond(t,"Blessed")?rollDie(4):0), dc: spellSaveDC(caster)});
-    let dmg = rollDice(diceArr[0], diceArr[1]).tot;
+    // Saving-throw modifiers from conditions (2024): Paralyzed/Stunned/Unconscious auto-fail Str & Dex,
+    // Restrained = Disadvantage on Dex, Dodging / Haste = Advantage on Dex, Danger Sense (Barbarian).
+    let sAdv = null;
+    if(saveAb==="dex"){
+      if(hasCond(t,"Restrained")) sAdv = "dis";
+      if(defenderDodging(t) || hasCond(t,"Hasted")) sAdv = sAdv==="dis"? null : "adv";
+      if(!t.isMonster && t.classId==="barbarian" && t.level>=2 && !hasCond(t,"Incapacitated")) sAdv = sAdv==="dis"? null : "adv";
+    }
+    if(caster._heightenedPending && t.isMonster!==caster.isMonster){ sAdv = sAdv==="adv"? null : "dis"; caster._heightenedPending = false; }
+    let sBonus = t.isMonster? saveBonusMonster(t,saveAb) : saveBonus(t,saveAb)+blessDie(t);
+    if(saveAb==="dex") sBonus += coverBonus(caster, t); // cover also helps Dex saves
+    let sv = d20Test({bonus: sBonus, adv: sAdv, dc: spellSaveDC(caster)});
+    if((saveAb==="str"||saveAb==="dex") && (hasCond(t,"Paralyzed")||hasCond(t,"Stunned"))) sv.success = false; // auto-fail
+    if(caster._carefulActive && !caster.isMonster && t.isMonster===caster.isMonster) sv.success = true; // Careful Spell
+    // Bardic Inspiration / Heroic Inspiration can rescue a failed save (any D20 Test)
+    if(!sv.success && !t.isMonster && t.inspiredDie){ const add = rollDie(t.inspiredDie); sv.total += add; sv.success = sv.total>=spellSaveDC(caster); t.inspiredDie = 0; log(`${esc(t.name)} uses Bardic Inspiration (+${add}) on the save → ${sv.total}.`,"good"); }
+    if(!sv.success && !t.isMonster && t.inspiration){ t.inspiration = false; const sv2 = d20Test({bonus: sBonus, adv: sAdv, dc: spellSaveDC(caster)}); if(!(saveAb==="str"||saveAb==="dex") || !(hasCond(t,"Paralyzed")||hasCond(t,"Stunned"))) sv = sv2; log(`${esc(t.name)} — Heroic Inspiration reroll on the save: ${sv.total}.`,"good"); }
+    let dmg = empoweredRoll(diceArr[0], diceArr[1]).tot;
     if(sp.dmg2) dmg += rollDice(sp.dmg2[0], sp.dmg2[1]).tot;
     let taken = dmg;
     if(sv.success) taken = halfOnSave? Math.floor(dmg/2) : 0;
+    // Evasion (Rogue/Monk L7): Dex save — success means NO damage, failure means half
+    if(!t.isMonster && saveAb==="dex" && (t.classId==="rogue"||t.classId==="monk") && t.level>=7){ taken = sv.success? 0 : Math.floor(dmg/2); }
     log(`${esc(t.name)} ${saveAb.toUpperCase()} save ${sv.total} vs ${spellSaveDC(caster)} — ${taken} ${type} damage.`,"sys");
-    if(taken>0) applyDamage(t, taken, type, caster);
+    if(taken>0) applyDamage(t, taken, type, caster, {spell:true});
     return sv.success;
   };
   const dealAttackDamage = (t, diceArr, type, extraDice=0)=>{
     let adv = null;
     if(hasCond(t,"Paralyzed")||hasCond(t,"Unconscious")) adv = "adv";
     if(hasCond(t,"FaerieFired")||hasCond(t,"Guided")) adv = "adv";
+    if(hasCond(t,"Invisible")) adv = adv==="adv"? null : "dis";
     if(hasCond(caster,"Poisoned")) adv = adv==="adv"? null : "dis";
-    const r = d20Test({bonus: spellAttackBonusOf(caster), adv});
-    const ac = t.isMonster? t.ac : armorClass(t);
-    if(r.crit || (!r.fumble && r.total>=ac)){
+    if(!caster.isMonster && caster.classId==="sorcerer" && caster.innateActive) adv = adv==="dis"? null : "adv"; // Innate Sorcery
+    if(hasCond(caster,"Invisible")) adv = adv==="dis"? null : "adv";
+    const atkBonus = spellAttackBonusOf(caster) + (caster.isMonster? 0 : blessDie(caster) + exhaustPen(caster));
+    let r = d20Test({bonus: atkBonus, adv});
+    const ac = (t.isMonster? t.ac + (t.shieldActive?5:0) : armorClass(t)) + coverBonus(caster, t);
+    let hitNow = r.crit || (!r.fumble && r.total>=ac);
+    if(!hitNow && caster._metaActive && caster._metaActive.id==="seeking"){ const r2 = d20Test({bonus: atkBonus, adv}); log(`Seeking Spell: the attack rerolls (${r2.total}).`,"sys"); r = r2; hitNow = r.crit || (!r.fumble && r.total>=ac); }
+    if(!hitNow && !caster.isMonster && caster.inspiration){ caster.inspiration = false; const r2 = d20Test({bonus: atkBonus, adv}); log(`${esc(caster.name)} — Heroic Inspiration reroll on the spell attack: ${r2.total}.`,"good"); r = r2; hitNow = r.crit || (!r.fumble && r.total>=ac); }
+    if(hitNow){
       if(!r.crit && canCastShield(t)){ castShieldReaction(t); if(r.total < ac+5){ log(`${esc(t.name)}'s Shield turns the spell aside!`,"good"); return; } }
-      let dmg = rollDice((diceArr[0]+extraDice)*(r.crit?2:1), diceArr[1]).tot + (sp.dmgMod? mod:0);
-      if(sp===SPELLS.eldritch_blast && !caster.isMonster && caster.agonizing) dmg += amod(caster,"cha");
+      const dmgCrit = r.crit || ((hasCond(t,"Paralyzed")||hasCond(t,"Unconscious")||t.downed) && distFt(caster,t)<=5);
+      let dmg = empoweredRoll((diceArr[0]+extraDice)*(dmgCrit?2:1), diceArr[1]).tot + (sp.dmgMod? mod:0);
+      if(sp===SPELLS.eldritch_blast && !caster.isMonster && hasInvocation(caster,"agonizing_blast")) dmg += amod(caster,"cha");
       if(!caster.isMonster && caster.classId==="sorcerer" && caster.subclass && caster.dragonType===type) dmg += amod(caster,"cha");
-      log(`Spell attack ${r.total} vs AC ${ac} — <b>${r.crit?"CRIT":"hit"}</b>, ${dmg} ${type}.`, r.crit?"good":"sys");
-      applyDamage(t, dmg, type, caster, {crit:r.crit});
+      if(!caster.isMonster && caster.classId==="cleric" && caster.subclass && caster.level>=7 && sp.lvl===0) dmg += amod(caster,"wis"); // Blessed Strikes: Potent Spellcasting
+      if(!caster.isMonster && caster.classId==="druid" && caster.level>=7 && sp.lvl===0) dmg += amod(caster,"wis"); // Elemental Fury: Potent Spellcasting
+      log(`Spell attack ${r.total} vs AC ${ac} — <b>${dmgCrit?"CRIT":"hit"}</b>, ${dmg} ${type}.`, dmgCrit?"good":"sys");
+      applyDamage(t, dmg, type, caster, {crit:dmgCrit, spell:true});
       if(sp.guide && !t.dead) addCondition(t,"Guided");
       if(sp.slow) addCondition(t,"Slowed",{expires:"turnEnd"});
+      if(sp===SPELLS.eldritch_blast && !caster.isMonster && hasInvocation(caster,"repelling_blast") && !t.dead){
+        const dx = Math.sign(t.x-caster.x), dy = Math.sign(t.y-caster.y);
+        for(let i=0;i<2;i++){ const nx=t.x+dx, ny=t.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,t.uid)){ t.x=nx; t.y=ny; } else break; }
+        log(`Repelling Blast hurls ${esc(t.name)} back.`,"sys");
+      }
     } else log(`Spell attack ${r.total} vs AC ${ac} — miss.`,"sys");
   };
   switch(spellId){
     case "magic_missile": {
+      // Shield negates Magic Missile entirely (and the reaction is well spent)
+      if(canCastShield(target)){ castShieldReaction(target); log(`${esc(target.name)} casts <b>Shield</b> — the darts dissolve against it!`,"good"); break; }
       const darts = sp.darts + up;
       let total = 0; for(let i=0;i<darts;i++) total += rollDie(4)+1;
       log(`${darts} darts strike ${esc(target.name)} unerringly for ${total} force damage.`,"sys");
-      applyDamage(target, total, "force", caster);
+      applyDamage(target, total, "force", caster, {spell:true});
       break; }
     case "eldritch_blast": {
-      const beams = 1 + (caster.level>=5?1:0) + (caster.level>=11?1:0);
-      for(let i=0;i<beams && target && !target.dead;i++){
-        let dice = [1 + Math.floor((caster.level||1)>=5?0:0), 10];
-        const scale = caster.level>=5? 1:0;
-        dealAttackDamage(target, [1,10], "force");
-        if(!caster.isMonster && caster.agonizing) { /* folded below */ }
-      }
+      const L = caster.level||1;
+      const beams = 1 + (L>=5?1:0) + (L>=11?1:0) + (L>=17?1:0);
+      for(let i=0;i<beams && target && !target.dead;i++) dealAttackDamage(target, [1,10], "force");
       break; }
     case "scorching_ray": {
       const rays = sp.rays + up;
@@ -1292,10 +1638,15 @@ function castSpell(caster, spellId, slotLvl, target, point){
       if(!succ && !target.dead) addCondition(target,"Mocked");
       break; }
     case "burning_hands": case "thunderwave": {
-      const targets = inArea(caster.x, caster.y, 15).filter(o=>o!==caster);
+      // Cone (Burning Hands) / cube emanating from the caster (Thunderwave), aimed at the clicked tile.
+      const dirx = point? Math.sign(point.x-caster.x) : 1, diry = point? Math.sign(point.y-caster.y) : 0;
+      const targets = COMBAT.actors.filter(o=>!o.dead && o!==caster && distFt(caster,o)<=15 && ((o.x-caster.x)*dirx + (o.y-caster.y)*diry) > 0);
       let dice = sp.dmg.slice(); if(sp.upcast) dice=[dice[0]+up*sp.upcast[0], dice[1]];
-      for(const t of targets){ if(evokerSculpt && t.isMonster!==true && !t.isMonster){ log(`${esc(t.name)} is sculpted out of the blast.`,"good"); continue; } dealSaveDamage(t, dice, sp.dtype, sp.save, sp.half);
-        if(spellId==="thunderwave" && !t.dead){ const dx=Math.sign(t.x-caster.x), dy=Math.sign(t.y-caster.y); for(let i=0;i<2;i++){ const nx=t.x+dx,ny=t.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,t.uid)){t.x=nx;t.y=ny;} else break; } } }
+      for(const t of targets){
+        if(evokerSculpt && !t.isMonster){ log(`${esc(t.name)} is sculpted out of the blast.`,"good"); continue; }
+        const succ = dealSaveDamage(t, dice, sp.dtype, sp.save, sp.half);
+        if(spellId==="thunderwave" && !succ && !t.dead){ const dx=Math.sign(t.x-caster.x), dy=Math.sign(t.y-caster.y); for(let i=0;i<2;i++){ const nx=t.x+dx,ny=t.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,t.uid)){t.x=nx;t.y=ny;} else break; } log(`Thunderwave hurls ${esc(t.name)} back 10 ft.`,"sys"); }
+      }
       break; }
     case "fireball": case "ice_storm": case "shatter": {
       const rFt = spellId==="shatter"? 10:20;
@@ -1317,17 +1668,38 @@ function castSpell(caster, spellId, slotLvl, target, point){
       healTarget(target, amt, caster);
       if(!caster.isMonster && caster.classId==="cleric" && caster.subclass && caster.level>=6 && target!==caster) healTarget(caster, 2+slotLvl, caster);
       break; }
-    case "revivify": if(target.dead||target.downed){ target.dead=false; target.downed=false; target.hp=1; target.deathSaves={s:0,f:0}; log(`<b>${esc(target.name)} returns to life with 1 HP!</b>`,"good"); } break;
+    case "revivify": {
+      if(!caster.isMonster && sp.materialGold){ if(G.gold < sp.materialGold){ log(`Revivify needs a diamond worth ${sp.materialGold} gp — the party doesn't have the gold.`,"bad"); break; } G.gold -= sp.materialGold; log(`The diamond crumbles to dust (${sp.materialGold} gp).`,"sys"); }
+      if(target.dead||target.downed){ target.dead=false; target.downed=false; target.hp=1; target.deathSaves={s:0,f:0}; removeCondition(target,"Unconscious"); log(`<b>${esc(target.name)} returns to life with 1 HP!</b>`,"good"); } break; }
     case "lesser_restoration": for(const cn of ["Blinded","Deafened","Paralyzed","Poisoned"]) removeCondition(target, cn); log(`${esc(target.name)} is cleansed.`,"good"); break;
     case "bless": {
-      const allies = COMBAT.actors.filter(o=>!o.dead && o.isMonster===caster.isMonster && !o.downed).sort((a,b)=>distFt(caster,a)-distFt(caster,b)).slice(0, 3+up);
+      const allies = COMBAT.actors.filter(o=>!o.dead && o.isMonster===caster.isMonster && !o.downed && distFt(caster,o)<=30).sort((a,b)=>distFt(caster,a)-distFt(caster,b)).slice(0, 3+up);
       for(const t of allies) addCondition(t,"Blessed",{source:caster.uid});
       log(`${allies.map(a=>esc(a.name)).join(", ")} are Blessed (+1d4 to attacks & saves).`,"good");
       break; }
     case "aid": {
-      const allies = COMBAT.actors.filter(o=>!o.dead && o.isMonster===caster.isMonster && !o.downed).slice(0,3);
-      for(const t of allies){ if(!t.isMonster){ t.aidBonus = 5 + up*5; t.hp += 5 + up*5; } else t.hp += 5; }
-      log(`Aid bolsters ${allies.map(a=>esc(a.name)).join(", ")} (+${5+up*5} HP).`,"good");
+      const allies = COMBAT.actors.filter(o=>!o.dead && o.isMonster===caster.isMonster && !o.downed && distFt(caster,o)<=30).sort((a,b)=>distFt(caster,a)-distFt(caster,b)).slice(0,3);
+      const nb = 5 + up*5;
+      for(const t of allies){
+        if(!t.isMonster){ const delta = nb - (t.aidBonus||0); t.aidBonus = nb; t.hp = Math.min(maxHp(t), t.hp + Math.max(0,delta)); } // recasting replaces; it never stacks
+        else t.hp += 5;
+      }
+      log(`Aid bolsters ${allies.map(a=>esc(a.name)).join(", ")} (+${nb} max & current HP).`,"good");
+      break; }
+    case "heroism": {
+      const amt = Math.max(1, mod);
+      addCondition(target, "Heroism", {source:caster.uid, amt});
+      if(!target.isMonster) target.tempHp = Math.max(target.tempHp||0, amt);
+      removeCondition(target, "Frightened");
+      log(`${esc(target.name)} is filled with Heroism: ${amt} temporary HP at the start of each turn, and no fear.`,"good");
+      break; }
+    case "dispel_magic": {
+      if(!target) break;
+      if(target.concentrating){ log(`Dispel Magic ends ${esc(target.name)}'s ${SPELLS[target.concentrating].name}.`,"good"); endConcentration(target); }
+      const before = target.conditions.length;
+      target.conditions = target.conditions.filter(x=>!x.source);
+      if(target.conditions.length<before) log(`Magical effects on ${esc(target.name)} unravel and end.`,"good");
+      if(target===caster || !target.concentrating) log(`${esc(target.name)} is swept clean of magic.`,"sys");
       break; }
     case "haste": addCondition(target,"Hasted",{source:caster.uid}); log(`${esc(target.name)} is Hasted (+2 AC, double Speed).`,"good"); break;
     case "mage_armor": target.mageArmor = true; log(`${esc(target.name)} is wrapped in Mage Armor (AC 13 + Dex).`,"good"); break;
@@ -1335,21 +1707,24 @@ function castSpell(caster, spellId, slotLvl, target, point){
     case "hunters_mark": case "hex": caster.concTarget = target.uid; log(`${esc(caster.name)} marks ${esc(target.name)} (+1d6 damage on weapon hits).`,"good"); break;
     case "spirit_guardians": addCondition(caster,"SpiritGuardians",{source:caster.uid}); log(`Spirit Guardians swirl around ${esc(caster.name)}.`,"good"); break;
     case "hold_person": {
-      const sv = target.isMonster? d20Test({bonus: saveBonusMonster(target,"wis"), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(target,"wis"), dc: spellSaveDC(caster)});
-      if(!sv.success){ addCondition(target,"Paralyzed",{repeatSave:"wis", dc: spellSaveDC(caster)}); log(`${esc(target.name)} is <b>Paralyzed</b>!`,"good"); } else log(`${esc(target.name)} resists Hold Person.`,"sys");
+      const ttype = target.isMonster? (target.creatureType||"humanoid") : "humanoid";
+      if(ttype!=="humanoid"){ log(`Hold Person only affects Humanoids — ${esc(target.name)} is a ${ttype}, and the spell finds no purchase.`,"bad"); break; }
+      const sv = target.isMonster? d20Test({bonus: saveBonusMonster(target,"wis"), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(target,"wis")+blessDie(target), dc: spellSaveDC(caster)});
+      if(!sv.success){ addCondition(target,"Paralyzed",{repeatSave:"wis", dc: spellSaveDC(caster), source:caster.uid}); log(`${esc(target.name)} is <b>Paralyzed</b>!`,"good"); } else log(`${esc(target.name)} resists Hold Person.`,"sys");
       break; }
     case "sleep": {
-      const targets = inArea(point.x, point.y, 10).filter(o=>o.isMonster!==caster.isMonster);
-      for(const t of targets){ const sv = t.isMonster? d20Test({bonus: saveBonusMonster(t,"wis"), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(t,"wis"), dc: spellSaveDC(caster)});
-        if(!sv.success){ addCondition(t,"Unconscious",{sleep:true}); log(`${esc(t.name)} falls asleep.`,"good"); } }
+      // 2024 Sleep: a 5-ft sphere; stage 1 is Incapacitated, stage 2 (failed repeat save) is Unconscious.
+      const targets = inArea(point.x, point.y, 5).filter(o=>o.isMonster!==caster.isMonster && !o.dead);
+      for(const t of targets){ const sv = t.isMonster? d20Test({bonus: saveBonusMonster(t,"wis"), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(t,"wis")+blessDie(t), dc: spellSaveDC(caster)});
+        if(!sv.success){ addCondition(t,"Incapacitated",{sleep:1, dc: spellSaveDC(caster), source:caster.uid}); log(`${esc(t.name)} grows drowsy — <b>Incapacitated</b> by Sleep.`,"good"); } else log(`${esc(t.name)} resists Sleep.`,"sys"); }
       break; }
     case "web": {
-      const targets = inArea(point.x, point.y, 20).filter(o=>o.isMonster!==caster.isMonster);
-      for(const t of targets){ const sv = t.isMonster? d20Test({bonus: saveBonusMonster(t,"dex"), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(t,"dex"), dc: spellSaveDC(caster)});
-        if(!sv.success){ addCondition(t,"Restrained",{repeatSave:"str", dc: spellSaveDC(caster)}); log(`${esc(t.name)} is stuck in webs — <b>Restrained</b>.`,"good"); } }
+      const targets = inArea(point.x, point.y, 10).filter(o=>o.isMonster!==caster.isMonster);
+      for(const t of targets){ const sv = t.isMonster? d20Test({bonus: saveBonusMonster(t,"dex"), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(t,"dex")+blessDie(t) + (hasCond(t,"Restrained")?0:0), dc: spellSaveDC(caster)});
+        if(!sv.success){ addCondition(t,"Restrained",{repeatSave:"str", dc: spellSaveDC(caster), source:caster.uid}); log(`${esc(t.name)} is stuck in webs — <b>Restrained</b>.`,"good"); } }
       break; }
     case "faerie_fire": {
-      const targets = inArea(point.x, point.y, 20);
+      const targets = inArea(point.x, point.y, 10);
       for(const t of targets){ const sv = t.isMonster? d20Test({bonus: saveBonusMonster(t,"dex"), dc: spellSaveDC(caster)}) : d20Test({bonus: saveBonus(t,"dex"), dc: spellSaveDC(caster)});
         if(!sv.success) addCondition(t,"FaerieFired",{source:caster.uid}); }
       log(`Faerie Fire outlines the area — attacks against the outlined have Advantage.`,"good");
@@ -1369,6 +1744,7 @@ function castSpell(caster, spellId, slotLvl, target, point){
     case "guidance": G.guidanceFor = (target||caster).uid; log(`${esc((target||caster).name)} is guided (+1d4 to the next check).`,"good"); break;
     default: log(`${sp.name} is cast (utility effect).`,"sys");
   }
+  caster._metaActive = null; caster._heightenedPending = false; caster._carefulActive = false; caster._empoweredActive = false;
   refreshAll();
   return true;
 }
@@ -1376,7 +1752,7 @@ function healTarget(t, amt, source){
   if(t.dead) return;
   const before = t.hp;
   t.hp = Math.min(t.isMonster? t.maxHp : maxHp(t), t.hp + amt);
-  if(t.downed && t.hp>0){ t.downed=false; t.deathSaves={s:0,f:0}; log(`<b>${esc(t.name)} is back on their feet!</b>`,"good"); }
+  if(t.downed && t.hp>0){ t.downed=false; t.deathSaves={s:0,f:0}; if(!t.conditions.some(x=>x.sleep)) removeCondition(t,"Unconscious"); log(`<b>${esc(t.name)} is back on their feet!</b>`,"good"); }
   log(`${esc(t.name)} regains ${t.hp-before} HP.`,"good");
   refreshAll();
 }
@@ -1388,7 +1764,7 @@ function renderCombatBar(){
   const a = currentActor();
   if(COMBAT.awaiting && COMBAT.awaiting.type==="smite"){
     const {att, def} = COMBAT.awaiting;
-    let html = `<b>${esc(att.name)}</b> — the blow lands on ${esc(def.name)}. Divine Smite? `;
+    let html = `<b>${esc(att.name)}</b> — the blow lands on ${esc(def.name)}${COMBAT.awaiting.crit?" (a crit — smite dice double!)":""}. Divine Smite? (Bonus Action, once per turn) `;
     if(!att.smiteFreeUsed) html += `<button onclick="resolveSmite(0)">Free Smite (Paladin's Smite)</button> `;
     for(let l=1;l<=4;l++) if(slotsLeft(att,l)>0) html += `<button onclick="resolveSmite(${l})">Smite — slot ${l}</button> `;
     html += `<button onclick="resolveSmite(-1)">No smite</button>`;
@@ -1404,19 +1780,26 @@ function renderCombatBar(){
   html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('dash')">Dash</button>`;
   html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('dodge')">Dodge</button>`;
   html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('disengage')">Disengage</button>`;
-  html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('grapple')">Grapple (click foe)</button>`;
-  html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('shove')">Shove (click foe)</button>`;
+  html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('hide')">Hide</button>`;
+  html += `<button ${st.actionUsed&&st.attacksLeft<=0?"disabled":""} onclick="combatAction('grapple')">Grapple (click foe)</button>`;
+  html += `<button ${st.actionUsed&&st.attacksLeft<=0?"disabled":""} onclick="combatAction('shove')">Shove Prone (click foe)</button>`;
+  html += `<button ${st.actionUsed&&st.attacksLeft<=0?"disabled":""} onclick="combatAction('push')">Push 5 ft (click foe)</button>`;
+  html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('ready')">Ready Attack</button>`;
+  if(hasCond(a,"Grappled")) html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('escape')">Escape Grapple</button>`;
+  if(st.hasteAction) html += `<span class="dim">Haste action available (Attack ×1 / Dash / Disengage / Hide)</span>`;
   // spells
   if(CLASSES[cls].spellcasting){
     html += `<button onclick="showSpellButtons()">✨ Cast a Spell</button>`;
   }
   html += `<button onclick="showItemButtons()">🎒 Item</button>`;
+  if(G.party.some(c=>c.downed&&!c.dead&&c!==a)) html += `<button ${st.actionUsed?"disabled":""} onclick="COMBAT.mode={type:'stabilize'};log('Click a downed ally to stabilise them (Medicine DC 10, or automatic with a Healer\\'s Kit).','sys')">Stabilise Ally (click)</button>`;
   // class bonus/action features
   if(cls==="barbarian" && !a.raging) html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('rage')">🔥 Rage (${a.res.rage||0})</button>`;
   if(cls==="barbarian") html += `<button onclick="classFeature('reckless')" class="${st.reckless?'on':''}">Reckless Attack ${st.reckless?"ON":""}</button>`;
   if(cls==="fighter") html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('secondwind')">Second Wind (${a.res.secondWind||0})</button>`;
-  if(cls==="fighter" && !st.surgeUsed) html += `<button onclick="classFeature('surge')">Action Surge</button>`;
+  if(cls==="fighter" && !a.surgeUsed) html += `<button onclick="classFeature('surge')">Action Surge</button>`;
   if(cls==="rogue") html += `<button ${st.bonusUsed?"disabled":""} onclick="combatAction('cunning:dash')">Cunning: Dash</button><button ${st.bonusUsed?"disabled":""} onclick="combatAction('cunning:disengage')">Cunning: Disengage</button><button ${st.bonusUsed?"disabled":""} onclick="combatAction('cunning:hide')">Cunning: Hide</button><button ${st.bonusUsed?"disabled":""} onclick="classFeature('steadyaim')">Steady Aim</button>`;
+  if(cls==="monk" && a.level>=5) html += `<button onclick="classFeature('stun')" class="${st.stunArmed?'on':''}">Stunning Strike ${st.stunArmed?"ARMED":"(arm: 1 Focus on hit)"}</button>`;
   if(cls==="monk" && a.level>=2){
     html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('flurry')">Flurry of Blows (1 Focus)</button>`;
     html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('patient')">Patient Defense (1 Focus)</button>`;
@@ -1424,11 +1807,12 @@ function renderCombatBar(){
     html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('martialbonus')">Martial Arts Strike</button>`;
   }
   if(cls==="cleric" && a.level>=2) html += `<button ${st.actionUsed?"disabled":""} onclick="classFeature('spark')">Channel: Divine Spark — heal (click ally)</button><button ${st.actionUsed?"disabled":""} onclick="classFeature('turn')">Channel: Turn Undead</button>`;
-  if(cls==="paladin") html += `<button ${st.actionUsed?"disabled":""} onclick="classFeature('layon')">Lay on Hands (${a.res.layPool||0}) — click ally</button>`;
+  if(cls==="paladin") html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('layon')">Lay on Hands (${a.res.layPool||0}) — click ally (Bonus Action)</button>`;
   if(cls==="paladin" && a.level>=3) html += `<button ${st.actionUsed?"disabled":""} onclick="classFeature('sacred')">Channel: Sacred Weapon</button>`;
-  if(cls==="druid" && a.level>=2 && !a.wildShape) html += `<button ${st.actionUsed?"disabled":""} onclick="classFeature('wildshape')">Wild Shape: Wolf (${a.res.wildShape||0})</button>`;
+  if(cls==="druid" && a.level>=2 && !a.wildShape) html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('wildshape')">Wild Shape: Wolf (${a.res.wildShape||0}) (Bonus Action)</button>`;
   if(cls==="bard") html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('inspire')">Bardic Inspiration (${a.res.bardic||0}) — click ally</button>`;
-  if(cls==="sorcerer" && a.level>=1) html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('innate')">Innate Sorcery</button>`;
+  if(cls==="sorcerer" && a.level>=2 && (a.metamagic||[]).length) html += (a.metamagic||[]).map(id=>`<button onclick="toggleMeta('${id}')" class="${COMBAT.metaPick===id?'on':''}">${METAMAGIC[id].name} (${METAMAGIC[id].cost} SP)</button>`).join("");
+  if(cls==="sorcerer" && a.level>=1) html += `<button ${st.bonusUsed?"disabled":""} onclick="classFeature('innate')">Innate Sorcery (${a.res.innate||0})</button>`;
   if(cls==="warlock" && a.level>=2 && !a.res.cunningUsed) html += `<button onclick="classFeature('cunning')">Magical Cunning (regain pact slots)</button>`;
   if(a.equip.offhand) html += `<button ${st.bonusUsed?"disabled":""} onclick="combatHint('offhand')">Offhand Attack (click foe)</button>`;
   html += `<button class="end-turn" onclick="playerEndTurn()">End Turn ➜</button>`;
@@ -1438,6 +1822,10 @@ function renderCombatBar(){
 function combatHint(kind){
   const a = currentActor(); COMBAT.mode = {type:kind};
   log(kind==="attack"? "Click a foe in range to attack." : "Click a foe to strike with your offhand weapon (Bonus Action).","sys");
+}
+function toggleMeta(id){
+  COMBAT.metaPick = COMBAT.metaPick===id? null : id;
+  renderCombatBar();
 }
 function showSpellButtons(){
   const a = currentActor(); const sub = $("cb-sub"); if(!sub) return;
@@ -1460,19 +1848,26 @@ function showSpellButtons(){
 function pickSpell(spellId, slotLvl){
   const a = currentActor(); const sp = SPELLS[spellId];
   const st = actorState(a);
-  const isBonus = sp.time==="Bonus Action";
-  if(isBonus && st.bonusUsed){ log("Bonus Action already used.","bad"); return; }
-  if(!isBonus && st.actionUsed){ log("Action already used.","bad"); return; }
-  const needsTarget = !sp.self && sp.kind!=="buff" || ["hunters_mark","hex","hold_person"].includes(spellId);
-  const selfCast = sp.self || ["bless","aid","spirit_guardians","divine_favor","misty_step","dimension_door","mage_armor"].includes(spellId);
+  // 2024: only ONE spell using a spell slot per turn, however you slice the actions
+  if(slotLvl>0 && st.slotSpellCast){ log("You've already cast a spell using a spell slot this turn — the 2024 rules allow only one (cantrips are fine).","bad"); return; }
+  // Metamagic: stash the pick on the caster; Quickened turns an Action spell into a Bonus Action spell
+  const metaId = (a.classId==="sorcerer" && COMBAT.metaPick)? COMBAT.metaPick : null;
+  if(metaId) a._meta = {id:metaId};
+  const quickened = metaId==="quickened" && sp.time==="Action";
+  const isBonus = sp.time==="Bonus Action" || quickened;
+  if(isBonus && st.bonusUsed){ log("Bonus Action already used.","bad"); a._meta = null; return; }
+  if(!isBonus && st.actionUsed){ log("Action already used.","bad"); a._meta = null; return; }
+  COMBAT.metaPick = null;
+  const selfCast = sp.self || ["bless","aid","spirit_guardians","divine_favor","misty_step","dimension_door","mage_armor","heroism","darkness"].includes(spellId);
   if(selfCast){
     if(!isBonus) st.actionUsed = true; else st.bonusUsed = true;
     const res = castSpell(a, spellId, slotLvl, a, {x:a.x,y:a.y});
     if(res!=="pending"){ afterPlayerAction(); }
     return;
   }
-  COMBAT.mode = {type:"cast", spellId, slotLvl};
+  COMBAT.mode = {type:"cast", spellId, slotLvl, distant: metaId==="distant", metaId};
   log(`Casting ${sp.name}: click a ${sp.aoe? "tile (area centre)" : "target"}.`,"sys");
+  renderCombatBar();
 }
 function showItemButtons(){
   const sub = $("cb-sub"); if(!sub) return;
@@ -1481,6 +1876,12 @@ function showItemButtons(){
   sub.innerHTML = pots.map(p=>`<button onclick="pickPotion('${p.id}')">${esc(ITEMS[p.id].name)} ×${p.qty} (Bonus Action: drink · Action: give to adjacent ally)</button>`).join(" ");
 }
 function pickPotion(id){ COMBAT.mode = {type:"potion", id}; log("Click yourself (Bonus Action) or an adjacent ally (Action) to use the potion.","sys"); }
+function useActionSlot(a, st, what){
+  // Returns true if an action (or the Haste action, for its limited menu) was spent.
+  if(!st.actionUsed){ st.actionUsed = true; return true; }
+  if(st.hasteAction && ["dash","disengage","hide"].includes(what)){ st.hasteAction = false; log(`(Haste action.)`,"sys"); return true; }
+  return false;
+}
 function combatAction(kind){
   const a = currentActor(); const st = actorState(a);
   if(kind.startsWith("cunning:")){
@@ -1490,10 +1891,20 @@ function combatAction(kind){
     if(sub==="disengage") st.disengaged = true;
     if(sub==="hide") doHide(a);
     log(`${esc(a.name)} — Cunning Action: ${sub}.`,"sys");
-  } else if(kind==="dash"){ st.actionUsed = true; st.moveLeft += speedOf(a); log(`${esc(a.name)} Dashes.`,"sys"); }
-  else if(kind==="dodge"){ st.actionUsed = true; st.dodging = true; log(`${esc(a.name)} Dodges — attacks against them have Disadvantage.`,"sys"); }
-  else if(kind==="disengage"){ st.actionUsed = true; st.disengaged = true; log(`${esc(a.name)} Disengages.`,"sys"); }
-  else if(kind==="grapple"||kind==="shove"){ COMBAT.mode = {type:kind}; log(`Click a foe within 5 ft to ${kind}.`,"sys"); return; }
+  } else if(kind==="dash"){ if(useActionSlot(a,st,"dash")){ st.moveLeft += speedOf(a); log(`${esc(a.name)} Dashes.`,"sys"); } }
+  else if(kind==="dodge"){ if(!st.actionUsed){ st.actionUsed = true; st.dodging = true; log(`${esc(a.name)} Dodges — attacks against them have Disadvantage, and Dex saves have Advantage.`,"sys"); } }
+  else if(kind==="disengage"){ if(useActionSlot(a,st,"disengage")){ st.disengaged = true; log(`${esc(a.name)} Disengages.`,"sys"); } }
+  else if(kind==="hide"){ if(useActionSlot(a,st,"hide")) doHide(a); }
+  else if(kind==="ready"){ if(!st.actionUsed){ st.actionUsed = true; st.readied = true; log(`${esc(a.name)} readies an attack — it will trigger when a foe comes within reach on its turn.`,"sys"); } }
+  else if(kind==="escape"){
+    if(st.actionUsed) return;
+    const grap = a.conditions.find(x=>x.name==="Grappled"); if(!grap) return;
+    st.actionUsed = true;
+    const chk = d20Test({bonus: Math.max(skillBonus(a,"Athletics"), skillBonus(a,"Acrobatics")), dc: grap.dc||13});
+    if(chk.success){ removeCondition(a,"Grappled"); st.moveLeft = speedOf(a); log(`${esc(a.name)} breaks free of the grapple (${chk.total} vs ${grap.dc||13})!`,"good"); }
+    else log(`${esc(a.name)} struggles but stays grappled (${chk.total} vs ${grap.dc||13}).`,"bad");
+  }
+  else if(kind==="grapple"||kind==="shove"||kind==="push"){ COMBAT.mode = {type:kind}; log(`Click a foe within 5 ft to ${kind==="push"?"push":kind}.`,"sys"); return; }
   refreshAll(); renderCombatBar();
 }
 function doHide(a){
@@ -1509,7 +1920,8 @@ function classFeature(kind){
     case "rage": if((a.res.rage||0)>0){ a.res.rage--; a.raging = true; st.bonusUsed = true; log(`${esc(a.name)} <b>RAGES!</b> (+${CLASSES.barbarian.rageDmg(a.level)} damage, resistance to physical).`,"good"); } break;
     case "reckless": st.reckless = !st.reckless; st.recklessUsed = st.reckless; log(`Reckless Attack ${st.reckless?"ON — your attacks have Advantage; attacks against you too":"OFF"}.`,"sys"); renderCombatBar(); return;
     case "secondwind": if((a.res.secondWind||0)>0){ a.res.secondWind--; st.bonusUsed = true; const h = rollDie(10)+a.level; healTarget(a, h, a); } break;
-    case "surge": st.surgeUsed = true; st.actionUsed = false; st.attacksLeft = 0; log(`${esc(a.name)} — <b>Action Surge!</b> Another action.`,"good"); break;
+    case "surge": a.surgeUsed = true; st.actionUsed = false; st.attacksLeft = 0; log(`${esc(a.name)} — <b>Action Surge!</b> Another action (the one-slot-spell-per-turn limit still applies).`,"good"); break;
+    case "stun": st.stunArmed = !st.stunArmed; log(`Stunning Strike ${st.stunArmed?"armed — your next hit spends 1 Focus":"disarmed"}.`,"sys"); renderCombatBar(); return;
     case "steadyaim": st.bonusUsed = true; st.steadyAim = true; log(`${esc(a.name)} takes Steady Aim — Advantage on the next attack.`,"sys"); break;
     case "flurry": if(a.res.focus>0){ a.res.focus--; st.bonusUsed = true; st.flurryPending = 2; log(`Flurry of Blows: click foes for two unarmed strikes.`,"sys"); COMBAT.mode={type:"flurry"}; renderCombatBar(); return; } break;
     case "patient": if(a.res.focus>0){ a.res.focus--; st.bonusUsed = true; st.dodging = true; log(`Patient Defense — ${esc(a.name)} Dodges.`,"sys"); } break;
@@ -1520,31 +1932,44 @@ function classFeature(kind){
       if((a.res.channel||0)<=0){ log("No Channel Divinity left.","bad"); return; }
       a.res.channel--; st.actionUsed = true;
       for(const m of enemiesAlive()){
-        if(!["skeleton","zombie","ghoul","wight","drowned_abbot"].includes(m.mid)) continue;
+        if(m.creatureType!=="undead") continue;
         if(distFt(a,m)>30) continue;
         const sv = d20Test({bonus: saveBonusMonster(m,"wis"), dc: spellDC(a)});
-        if(!sv.success){ addCondition(m,"Frightened",{turned:true}); log(`Turn Undead! ${esc(m.name)} is turned (save ${sv.total}).`,"good"); }
+        if(!sv.success){
+          addCondition(m,"Frightened",{turned:true, rounds:10, source:a.uid});
+          addCondition(m,"Incapacitated",{turned:true, rounds:10, source:a.uid});
+          log(`Turn Undead! ${esc(m.name)} is turned — Frightened and Incapacitated for 1 minute or until it takes damage (save ${sv.total}).`,"good");
+          if(a.level>=5){ const sear = rollDice(Math.max(1,amod(a,"wis")),8).tot; log(`Sear Undead sears ${esc(m.name)} for ${sear} radiant!`,"good"); applyDamage(m, sear, "radiant", a, {spell:true}); }
+        }
       }
       break; }
     case "layon": COMBAT.mode={type:"layon"}; log("Click an ally (or yourself) to heal from the Lay on Hands pool.","sys"); renderCombatBar(); return;
     case "sacred": if((a.res.channel||0)>0){ a.res.channel--; st.actionUsed = true; a.sacredWeapon = true; log(`Sacred Weapon: ${esc(a.name)}'s weapon glows (+Cha to attacks this combat).`,"good"); } break;
-    case "wildshape": if((a.res.wildShape||0)>0){ a.res.wildShape--; st.actionUsed = true; a.wildShape = true; a.wildTemp = 11; log(`${esc(a.name)} becomes a <b>wolf</b>! (Bite attack, 11 temp HP, Speed 40.)`,"good"); } break;
+    case "wildshape": if((a.res.wildShape||0)>0){ a.res.wildShape--; st.bonusUsed = true; a.wildShape = true; a.wildTemp = a.level; log(`${esc(a.name)} becomes a <b>wolf</b>! (Bite attack, ${a.level} temp HP = Druid level, Speed 40.)`,"good"); } break;
     case "inspire": COMBAT.mode={type:"inspire"}; log("Click an ally to give them a Bardic Inspiration die.","sys"); renderCombatBar(); return;
-    case "innate": st.bonusUsed = true; a.innateActive = true; log(`Innate Sorcery! +1 spell DC, Advantage on spell attacks for this combat.`,"good"); break;
-    case "cunning": a.res.cunningUsed = true; a.pactUsed = Math.max(0, a.pactUsed - Math.ceil(PACT_SLOTS[a.level].n/2)); log(`Magical Cunning: pact slots partially restored.`,"good"); break;
+    case "innate": {
+      if(st.bonusUsed) break;
+      if((a.res.innate||0)>0){ a.res.innate--; }
+      else if(a.level>=7 && (a.res.sorcery||0)>=2){ a.res.sorcery -= 2; log(`Innate Sorcery fuelled by 2 Sorcery Points.`,"sys"); }
+      else { log("No Innate Sorcery uses left (2 per Long Rest; at L7 you can burn 2 Sorcery Points instead).","bad"); break; }
+      st.bonusUsed = true; a.innateActive = true; log(`Innate Sorcery! +1 spell DC, Advantage on spell attacks for 1 minute.`,"good"); break; }
+    case "cunning": a.res.cunningUsed = true; a.pactUsed = Math.max(0, a.pactUsed - Math.ceil(PACT_SLOTS[a.level].n/2)); log(`Magical Cunning: up to half your Pact slots return (rounded up).`,"good"); break;
   }
   refreshAll(); renderCombatBar();
 }
 function resolveSmite(lvl){
-  const {att, def} = COMBAT.awaiting; COMBAT.awaiting = null;
+  const {att, def} = COMBAT.awaiting; const wasCrit = COMBAT.awaiting.crit; COMBAT.awaiting = null;
   if(lvl>=0 && !def.dead){
-    let dice = 2 + (lvl>0? lvl:1);
-    if(!att.smiteFreeUsed && lvl===0){ att.smiteFreeUsed = true; dice = 2; }
-    else if(lvl>0) useSlot(att, lvl);
-    if(def.mid==="fiend"||def.immune&&false) dice++;
+    const st = actorState(att);
+    st.bonusUsed = true; st.smiteUsed = true; // Divine Smite is a Bonus Action, once per turn
+    // SRD: 2d8 for a 1st-level slot, +1d8 per slot level above 1st; the free Paladin's Smite cast counts as 1st level
+    let dice = 1 + Math.max(1, lvl);
+    if(lvl===0) att.smiteFreeUsed = true; else useSlot(att, lvl);
+    if(def.creatureType==="fiend" || def.creatureType==="undead") dice += 1; // +1d8 vs fiends and undead
+    if(wasCrit) dice *= 2; // smite dice double on a critical hit
     const dmg = rollDice(dice,8).tot;
-    log(`<b>Divine Smite!</b> +${dmg} radiant damage.`,"good");
-    applyDamage(def, dmg, "radiant", att);
+    log(`<b>Divine Smite!</b> +${dmg} radiant damage (${dice}d8).`,"good");
+    applyDamage(def, dmg, "radiant", att, {spell:true});
   }
   renderCombatBar(); refreshAll();
   if(checkCombatEnd()) return;
@@ -1563,17 +1988,26 @@ async function enemyTurn(m){
   const st = actorState(m);
   await sleep(250);
   if(m.dead || COMBAT.over) { return; }
-  // turned undead flee
-  if(hasCond(m,"Frightened") && m.conditions.find(x=>x.name==="Frightened")?.turned){
-    const away = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid);
+  // turned undead flee (Turn Undead: Frightened + Incapacitated, must move away)
+  if(m.conditions.some(x=>x.turned)){
+    const away = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
     let best=null,bd=-1;
     for(const k of away.keys()){ const [x,y]=k.split(",").map(Number); const d = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>bd){bd=d;best=[x,y];} }
     if(best) moveActorTo(m, best[0], best[1]);
     log(`${esc(m.name)} flees, turned.`,"sys");
     endTurnEffects(m); nextTurn(); return;
   }
-  // caster behaviour
-  if(m.spells && m.slotsUsed < m.spells.slots && activeParty().length){
+  // Goblin Nimble Escape: a badly hurt goblin Disengages and flees
+  if(MONSTERS[m.mid].bonusAction==="disengage" && m.hp <= Math.floor(m.maxHp/3) && activeParty().length){
+    st.disengaged = true;
+    const away = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
+    let best=null,bd=-1;
+    for(const k of away.keys()){ const [x,y]=k.split(",").map(Number); const d = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>bd){bd=d;best=[x,y];} }
+    if(best && (best[0]!==m.x||best[1]!==m.y)){ moveActorTo(m, best[0], best[1]); log(`${esc(m.name)} uses Nimble Escape — Disengage and dart away!`,"sys"); }
+    endTurnEffects(m); nextTurn(); return;
+  }
+  // caster behaviour (per-level slots; cantrips are free)
+  if(m.spells && activeParty().length){
     const did = enemyCast(m);
     if(did){ await sleep(400); if(checkCombatEnd()) return; endTurnEffects(m); nextTurn(); return; }
   }
@@ -1581,18 +2015,22 @@ async function enemyTurn(m){
   const targets = activeParty();
   if(!targets.length){ endTurnEffects(m); nextTurn(); return; }
   let target = targets.sort((a,b)=>distFt(m,a)-distFt(m,b))[0];
-  const atkDef = m.atk[0];
-  const reach = atkDef.ranged? 60:5;
+  // pick a weapon: melee if in reach, otherwise the ranged attack if it has one
+  const meleeAtk = m.atk.find(a2=>!a2.ranged) || m.atk[0];
+  const rangedAtk = m.atk.find(a2=>a2.ranged);
+  let atkDef = (distFt(m,target)<=5 || !rangedAtk)? meleeAtk : rangedAtk;
+  const reach = atkDef.ranged? (atkDef.range||60) : 5;
   if(distFt(m,target) > reach){
     // move toward target: pick reachable tile minimising distance to target
-    const reachTiles = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid);
+    const reachTiles = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
     let best=null, bd=1e9;
     for(const k of reachTiles.keys()){ const [x,y]=k.split(",").map(Number); const d = Math.max(Math.abs(target.x-x),Math.abs(target.y-y)); if(d<bd){bd=d;best=[x,y];} }
     if(best && (best[0]!==m.x||best[1]!==m.y)) moveActorTo(m, best[0], best[1]);
     await sleep(200);
+    atkDef = (distFt(m,target)<=5 || !rangedAtk)? meleeAtk : rangedAtk;
   }
-  if(!m.dead && distFt(m,target) <= reach + (atkDef.ranged?40:0)){
-    performAttack(m, target, null, {});
+  if(!m.dead && distFt(m,target) <= (atkDef.ranged? (atkDef.range||60) : 5)){
+    performAttack(m, target, atkDef, {});
     await sleep(350);
   }
   if(checkCombatEnd()) return;
@@ -1604,25 +2042,27 @@ function enemyCast(m){
   const party = activeParty();
   if(!party.length) return false;
   const heroT = party.sort((a,b)=>distFt(m,a)-distFt(m,b))[0];
+  const can = id => monsterSlotAvailable(m, SPELLS[id].lvl);
   // acolyte-type: heal a wounded ally monster
-  if(list.includes("cure_wounds")){
+  if(list.includes("cure_wounds") && can("cure_wounds")){
     const wounded = COMBAT.actors.filter(o=>o.isMonster&&!o.dead&&o.hp<o.maxHp*0.6).sort((a,b)=>a.hp-b.hp)[0];
-    if(wounded && distFt(m,wounded)<=5){ castSpell(m, "cure_wounds", 1, wounded, null); return true; }
+    if(wounded && distFt(m,wounded)<=5){ return castSpell(m, "cure_wounds", 1, wounded, null)===true; }
   }
-  if(list.includes("fireball") && distFt(m,heroT)<=150){
-    castSpell(m, "fireball", 3, null, {x:heroT.x, y:heroT.y}); return true;
+  if(list.includes("bless") && COMBAT.round===0 && !COMBAT.actors.some(o=>o.isMonster&&hasCond(o,"Blessed")) && can("bless")){ return castSpell(m, "bless", 1, m, null)===true; }
+  if(list.includes("fireball") && can("fireball") && distFt(m,heroT)<=150){
+    return castSpell(m, "fireball", 3, null, {x:heroT.x, y:heroT.y})===true;
   }
-  if(list.includes("blight") && distFt(m,heroT)<=30){ castSpell(m, "blight", 4, heroT, null); return true; }
-  if(list.includes("spirit_guardians") && !m.concentrating && distFt(m,heroT)<=20){ castSpell(m, "spirit_guardians", 3, m, null); return true; }
-  if(list.includes("hold_person") && distFt(m,heroT)<=60 && Math.random()<0.6){ castSpell(m, "hold_person", 2, heroT, null); return true; }
-  if(list.includes("inflict_wounds") && distFt(m,heroT)<=5){ castSpell(m, "inflict_wounds", 1, heroT, null); return true; }
-  if(list.includes("magic_missile") && distFt(m,heroT)<=120){ const low = party.sort((a,b)=>a.hp-b.hp)[0]; castSpell(m, "magic_missile", 1, low, null); return true; }
-  if(list.includes("sacred_flame") && distFt(m,heroT)<=60){ castSpell(m, "sacred_flame", 0, heroT, null); return true; }
-  if(list.includes("spiritual_weapon") && distFt(m,heroT)<=60){ castSpell(m, "spiritual_weapon", 2, heroT, null); return true; }
-  if(list.includes("misty_step") && COMBAT.actors.some(o=>!o.isMonster&&!o.dead&&distFt(o,m)<=5)){
-    const tiles = bfs(curMap, m.x, m.y, 6, m.uid); let best=null,bd=-1;
+  if(list.includes("blight") && can("blight") && distFt(m,heroT)<=30){ return castSpell(m, "blight", 4, heroT, null)===true; }
+  if(list.includes("spirit_guardians") && can("spirit_guardians") && !m.concentrating && distFt(m,heroT)<=20){ return castSpell(m, "spirit_guardians", 3, m, null)===true; }
+  if(list.includes("hold_person") && can("hold_person") && distFt(m,heroT)<=60 && Math.random()<0.6){ return castSpell(m, "hold_person", 2, heroT, null)===true; }
+  if(list.includes("inflict_wounds") && can("inflict_wounds") && distFt(m,heroT)<=5){ return castSpell(m, "inflict_wounds", 1, heroT, null)===true; }
+  if(list.includes("magic_missile") && can("magic_missile") && distFt(m,heroT)<=120){ const low = party.sort((a,b)=>a.hp-b.hp)[0]; return castSpell(m, "magic_missile", 1, low, null)===true; }
+  if(list.includes("sacred_flame") && distFt(m,heroT)<=60){ return castSpell(m, "sacred_flame", 0, heroT, null)===true; }
+  if(list.includes("spiritual_weapon") && can("spiritual_weapon") && distFt(m,heroT)<=60){ return castSpell(m, "spiritual_weapon", 2, heroT, null)===true; }
+  if(list.includes("misty_step") && can("misty_step") && COMBAT.actors.some(o=>!o.isMonster&&!o.dead&&distFt(o,m)<=5)){
+    const tiles = bfs(curMap, m.x, m.y, 6, m.uid, true); let best=null,bd=-1;
     for(const k of tiles.keys()){ const [x,y]=k.split(",").map(Number); const d=Math.min(...party.map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>bd){bd=d;best=[x,y];} }
-    if(best){ m.x=best[0]; m.y=best[1]; m.slotsUsed++; log(`${esc(m.name)} vanishes in mist and reappears across the room.`,"sys"); refreshAll(); return true; }
+    if(best){ m.x=best[0]; m.y=best[1]; useMonsterSlot(m,2); log(`${esc(m.name)} vanishes in mist and reappears across the room.`,"sys"); refreshAll(); return true; }
   }
   return false;
 }
@@ -1670,28 +2110,49 @@ function combatClick(x,y){
   }
   if(mode && mode.type==="cast"){
     const sp = SPELLS[mode.spellId];
-    const isBonus = sp.time==="Bonus Action";
+    const isBonus = sp.time==="Bonus Action" || (mode.metaId==="quickened" && sp.time==="Action");
     let tgt = target, point = {x,y};
     if(sp.aoe && !["burning_hands","thunderwave"].includes(mode.spellId)){ /* point target */ tgt = null; }
     if(!sp.aoe && !tgt){ log("Click a creature to target.","bad"); return; }
-    if(tgt && distFt(a,tgt) > (sp.range||5) + 5){ log("Out of range.","bad"); return; }
+    const effRange = (sp.range||5) * (mode.distant? 2:1);
+    if(tgt && distFt(a,tgt) > effRange){ log(`Out of range (${effRange} ft).`,"bad"); return; }
+    if(sp.aoe && Math.max(Math.abs(x-a.x),Math.abs(y-a.y))*5 > effRange){ log(`That point is out of range (${effRange} ft).`,"bad"); return; }
+    if(tgt && !hasLoS(a,tgt)){ log("No line of sight — a wall is in the way.","bad"); return; }
+    if(sp.humanoidOnly && tgt && (tgt.creatureType||"humanoid")!=="humanoid"){ log(`${sp.name} only affects Humanoids.`,"bad"); return; }
     if(isBonus) st.bonusUsed = true; else st.actionUsed = true;
     COMBAT.mode = null;
     castSpell(a, mode.spellId, mode.slotLvl, tgt, point);
     afterPlayerAction();
     return;
   }
-  if(mode && (mode.type==="grapple"||mode.type==="shove")){
+  if(mode && (mode.type==="grapple"||mode.type==="shove"||mode.type==="push")){
     if(!target || target.isMonster!==true){ log("Click a foe.","bad"); return; }
     if(distFt(a,target)>5){ log("Too far.","bad"); return; }
-    st.actionUsed = true;
+    // Grapple/Shove are Unarmed Strike options: they replace ONE attack of the Attack action
+    if(!st.actionUsed){ st.actionUsed = true; st.attacksLeft = extraAttacks(a); }
+    if(st.attacksLeft<=0){ log("No attacks left this turn.","bad"); COMBAT.mode = null; return; }
+    st.attacksLeft--;
     const dc = 8 + amod(a,"str") + pb(a);
-    const saveAb = modOf(target.ab.str)>=modOf(target.ab.dex)? "str":"dex";
+    const saveAb = modOf(target.ab.str)>=modOf(target.ab.dex)? "str":"dex"; // the target chooses the better of Str/Dex
     const sv = d20Test({bonus: saveBonusMonster(target, saveAb), dc});
     if(!sv.success){
-      if(mode.type==="grapple"){ addCondition(target,"Grappled"); actorState(target).moveLeft = 0; log(`Grappled! ${esc(target.name)} can't move (save ${sv.total} vs ${dc}).`,"good"); }
-      else { addCondition(target,"Prone"); log(`Shoved! ${esc(target.name)} is Prone (save ${sv.total} vs ${dc}).`,"good"); }
+      if(mode.type==="grapple"){ addCondition(target,"Grappled",{grappler:a.uid, dc}); log(`Grappled! ${esc(target.name)} has Speed 0 and Disadvantage on attacks against anyone else (save ${sv.total} vs ${dc}). It can escape with an action.`,"good"); }
+      else if(mode.type==="shove"){ addCondition(target,"Prone"); log(`Shoved! ${esc(target.name)} is Prone (save ${sv.total} vs ${dc}).`,"good"); }
+      else { const dx=Math.sign(target.x-a.x), dy=Math.sign(target.y-a.y); const nx=target.x+dx, ny=target.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,target.uid)){ target.x=nx; target.y=ny; } log(`Pushed! ${esc(target.name)} is shoved 5 ft away (save ${sv.total} vs ${dc}).`,"good"); }
     } else log(`${esc(target.name)} resists (save ${sv.total} vs ${dc}).`,"sys");
+    COMBAT.mode = null; afterPlayerAction(); return;
+  }
+  if(mode && mode.type==="stabilize"){
+    if(!target || target.isMonster || !target.downed){ log("Click a downed ally.","bad"); return; }
+    if(distFt(a,target)>5){ log("Too far.","bad"); return; }
+    if(st.actionUsed){ log("Action used.","bad"); return; }
+    st.actionUsed = true;
+    if(countItem("healers_kit")>0){ target.deathSaves = {s:3,f:0}; log(`${esc(a.name)} stabilises ${esc(target.name)} with a Healer's Kit.`,"good"); }
+    else {
+      const chk = d20Test({bonus: skillBonus(a,"Medicine"), dc: 10});
+      if(chk.success){ target.deathSaves = {s:3,f:0}; log(`${esc(a.name)} stabilises ${esc(target.name)} (Medicine ${chk.total} vs DC 10).`,"good"); }
+      else log(`${esc(a.name)} can't stabilise ${esc(target.name)} (Medicine ${chk.total} vs DC 10).`,"bad");
+    }
     COMBAT.mode = null; afterPlayerAction(); return;
   }
   if(mode && mode.type==="potion"){
@@ -1705,6 +2166,7 @@ function combatClick(x,y){
   }
   if(mode && mode.type==="spark"){
     if(!target||target.isMonster){ log("Click an ally.","bad"); return; }
+    if(distFt(a,target)>30){ log("Divine Spark reaches 30 ft.","bad"); return; }
     if((a.res.channel||0)<=0){ log("No Channel Divinity left.","bad"); COMBAT.mode=null; return; }
     a.res.channel--; st.actionUsed = true;
     healTarget(target, rollDie(8)+amod(a,"wis"), a);
@@ -1712,9 +2174,12 @@ function combatClick(x,y){
   }
   if(mode && mode.type==="layon"){
     if(!target||target.isMonster){ log("Click an ally.","bad"); return; }
+    if(distFt(a,target)>5){ log("Lay on Hands needs touch.","bad"); return; }
     const pool = a.res.layPool||0; if(pool<=0){ log("Lay on Hands pool is empty.","bad"); COMBAT.mode=null; return; }
-    const need = maxHp(target)-target.hp; const amt = Math.min(pool, Math.max(need,1));
-    a.res.layPool -= amt; st.actionUsed = true;
+    let spent = 0;
+    if(hasCond(target,"Poisoned") && pool>=5){ a.res.layPool -= 5; spent = 5; removeCondition(target,"Poisoned"); log(`Lay on Hands cures ${esc(target.name)}'s Poisoned condition (5 points).`,"good"); }
+    const need = maxHp(target)-target.hp; const amt = Math.min(a.res.layPool, Math.max(need,1));
+    a.res.layPool -= amt; st.bonusUsed = true; // 2024: Lay on Hands is a Bonus Action
     if(target.downed||target.hp>0) healTarget(target, amt, a);
     COMBAT.mode=null; afterPlayerAction(); return;
   }
@@ -1737,15 +2202,18 @@ function combatClick(x,y){
   if(mode && mode.type==="offhand"){
     if(!target||!target.isMonster){ log("Click a foe.","bad"); return; }
     st.bonusUsed = true;
-    performAttack(a, target, a.equip.offhand, {});
+    performAttack(a, target, a.equip.offhand, {noAbilityMod:true}); // no ability modifier to damage without Two-Weapon Fighting
     COMBAT.mode=null; afterPlayerAction(); return;
   }
   // default: attack a foe, or move
   if(target && target.isMonster){
-    if(st.actionUsed && st.attacksLeft<=0){ log("No attacks left this turn. (Extra Attack / bonus actions may remain.)","bad"); return; }
     const wid = a.equip.weapon; const w = wid? weaponDef(wid):null;
-    const range = a.wildShape? 5 : w? (w.ranged? 80 : (w.props.includes("Reach")?10:5)) : 5;
+    const range = a.wildShape? 5 : weaponRangeFt(w);
     if(distFt(a,target) > range){ log(`Too far — move closer (weapon range ${range} ft).`,"bad"); return; }
+    if(st.actionUsed && st.attacksLeft<=0){
+      if(st.hasteAction){ st.hasteAction = false; st.attacksLeft = 1; log(`(Haste action: one more attack.)`,"sys"); }
+      else { log("No attacks left this turn. (Extra Attack / bonus actions may remain.)","bad"); return; }
+    }
     if(!st.actionUsed){ st.actionUsed = true; st.attacksLeft = extraAttacks(a); }
     if(st.steadyAim){ st.steadyAim=false; performAttack(a, target, null, {advOverride:"adv"}); }
     else performAttack(a, target, null, {});
@@ -1891,13 +2359,25 @@ function openSpellsMenu(){
   const ms = cls.spellcasting==="pact"? null : maxSlots(c);
   if(cls.spellcasting==="pact"){ const p = PACT_SLOTS[c.level]; html += `<p>Pact Magic: ${p.n} slot(s) of level ${p.lvl}, regained on a Short Rest. Used: ${c.pactUsed}. Spell DC ${spellDC(c)}, attack ${fmtMod(spellAtkBonus(c))}.</p>`; }
   else html += `<p>Slots: ${ms.map((n,l)=>`L${l+1}: ${slotsLeft(c,l+1)}/${n}`).join(" · ")} · Spell DC ${spellDC(c)} · Spell attack ${fmtMod(spellAtkBonus(c))}</p>`;
-  html += `<p class="dim">Prepared/known limit: ${spellLimit(c)} spells (cantrips: ${cls.cantrips||0}). Tick spells to prepare them. Changes apply immediately; prepared casters normally change after a Long Rest — house-ruled flexible here.</p>`;
+  html += `<p class="dim">Prepared/known limit: ${spellLimit(c)} spells (cantrips: ${cantripLimit(c)}). Tick spells to prepare them. Changes apply immediately; prepared casters normally change after a Long Rest — house-ruled flexible here.</p>`;
+  if(c.classId==="warlock"){
+    const invMax = INVOCATIONS_AT[c.level-1]||0;
+    html += `<h3>Eldritch Invocations (${(c.invocations||[]).length}/${invMax})</h3>` + Object.entries(INVOCATIONS).filter(([id,iv])=>iv.minLvl<=c.level).map(([id,iv])=>`<div class="shop-row"><span><label><input type="checkbox" ${(c.invocations||[]).includes(id)?"checked":""} ${!(c.invocations||[]).includes(id)&&(c.invocations||[]).length>=invMax?"disabled":""} onchange="toggleInvocation('${c.uid}','${id}')"> <b>${iv.name}</b> <span class="dim">${esc(iv.desc)}</span></label></span></div>`).join("");
+    if(hasInvocation(c,"armor_of_shadows")) html += `<button onclick="toggleArmorShadows('${c.uid}')">${c.mageArmor?"Armor of Shadows: ON (click to drop)":"Cast Mage Armor on yourself (at will)"}</button> `;
+    if(hasInvocation(c,"fiendish_vigor")) html += `<button onclick="fiendishVigor('${c.uid}')">Fiendish Vigor: gain 1d4+4 temp HP</button>`;
+  }
+  if(c.classId==="sorcerer" && c.level>=2){
+    const mmMax = 2;
+    html += `<h3>Metamagic (${(c.metamagic||[]).length}/${mmMax} chosen · ${c.res.sorcery||0} Sorcery Points)</h3>` + Object.entries(METAMAGIC).map(([id,mm])=>`<div class="shop-row"><span><label><input type="checkbox" ${(c.metamagic||[]).includes(id)?"checked":""} ${!(c.metamagic||[]).includes(id)&&(c.metamagic||[]).length>=mmMax?"disabled":""} onchange="toggleMetamagic('${c.uid}','${id}')"> <b>${mm.name}</b> <span class="dim">${mm.cost} SP — ${esc(mm.desc)}</span></label></span></div>`).join("");
+    html += `<h3>Font of Magic</h3><div class="shop-row"><span>Convert a spell slot into Sorcery Points (points = slot level).</span><span>${[1,2,3,4].filter(l=>slotsLeft(c,l)>0).map(l=>`<button onclick="slotToPoints('${c.uid}',${l})">Slot ${l} → ${l} SP</button>`).join(" ")||"<span class='dim'>no slots</span>"}</span></div>`;
+    html += `<div class="shop-row"><span>Create a slot with Sorcery Points (created slots vanish at a Long Rest).</span><span>${[[1,2,2],[2,3,3],[3,5,5],[4,6,7],[5,7,9]].filter(([l,cost,minL])=>c.level>=minL).map(([l,cost])=>`<button ${(c.res.sorcery||0)<cost?"disabled":""} onclick="pointsToSlot('${c.uid}',${l},${cost})">Lvl ${l} slot (${cost} SP)</button>`).join(" ")}</span></div>`;
+  }
   const classSpells = Object.entries(SPELLS).filter(([id,sp])=>sp.classes.includes(c.classId)).sort((a,b)=>a[1].lvl-b[1].lvl);
   for(const [id,sp] of classSpells){
     const known = c.spellsKnown.includes(id);
     const cantripCount = c.spellsKnown.filter(x=>SPELLS[x]&&SPELLS[x].lvl===0).length;
     const spellCount = c.spellsKnown.filter(x=>SPELLS[x]&&SPELLS[x].lvl>0).length;
-    const canAdd = sp.lvl===0? cantripCount < (cls.cantrips||0) : spellCount < spellLimit(c);
+    const canAdd = sp.lvl===0? cantripCount < cantripLimit(c) : spellCount < spellLimit(c);
     let castBtn = "";
     if(known && !COMBAT && (sp.kind==="heal"||sp.self||["bless","aid","mage_armor","guidance"].includes(id))){
       castBtn = ` <button onclick="castOutOfCombat('${c.uid}','${id}')">Cast now</button>`;
@@ -1913,6 +2393,32 @@ function toggleSpell(uid, id){
   else c.spellsKnown.push(id);
   openSpellsMenu();
 }
+function toggleInvocation(uid, id){
+  const c = G.party.find(x=>x.uid===uid); c.invocations = c.invocations||[];
+  if(c.invocations.includes(id)) c.invocations = c.invocations.filter(x=>x!==id);
+  else c.invocations.push(id);
+  openSpellsMenu(); refreshPanels();
+}
+function toggleMetamagic(uid, id){
+  const c = G.party.find(x=>x.uid===uid); c.metamagic = c.metamagic||[];
+  if(c.metamagic.includes(id)) c.metamagic = c.metamagic.filter(x=>x!==id);
+  else c.metamagic.push(id);
+  openSpellsMenu();
+}
+function toggleArmorShadows(uid){ const c = G.party.find(x=>x.uid===uid); c.mageArmor = !c.mageArmor; log(`Armor of Shadows ${c.mageArmor?"raised":"dropped"}.`,"sys"); openSpellsMenu(); refreshPanels(); }
+function fiendishVigor(uid){ const c = G.party.find(x=>x.uid===uid); const amt = rollDie(4)+4; c.tempHp = Math.max(c.tempHp||0, amt); log(`Fiendish Vigor: ${c.name} gains ${amt} temporary HP.`,"good"); openSpellsMenu(); refreshPanels(); }
+function slotToPoints(uid, lvl){
+  const c = G.party.find(x=>x.uid===uid); if(slotsLeft(c,lvl)<=0) return;
+  useSlot(c, lvl); c.res.sorcery = Math.min(c.level, (c.res.sorcery||0) + lvl);
+  log(`Font of Magic: ${c.name} converts a level-${lvl} slot into ${lvl} Sorcery Points.`,"sys");
+  openSpellsMenu(); refreshPanels();
+}
+function pointsToSlot(uid, lvl, cost){
+  const c = G.party.find(x=>x.uid===uid); if((c.res.sorcery||0)<cost) return;
+  c.res.sorcery -= cost; c.createdSlots = c.createdSlots||{}; c.createdSlots[lvl] = (c.createdSlots[lvl]||0)+1;
+  log(`Font of Magic: ${c.name} creates a level-${lvl} spell slot (${cost} SP). It vanishes at the next Long Rest.`,"sys");
+  openSpellsMenu(); refreshPanels();
+}
 function castOutOfCombat(uid, id){
   const c = G.party.find(x=>x.uid===uid); const sp = SPELLS[id];
   const slotLvl = sp.lvl===0? 0 : (function(){ for(let l=sp.lvl;l<=5;l++) if(slotsLeft(c,l)>0) return l; return 0; })();
@@ -1926,9 +2432,9 @@ function castOutOfCombat(uid, id){
     healTarget(t, amt, c);
   }
   else if(id==="mage_armor"){ c.mageArmor = true; log(`${c.name} casts Mage Armor.`,"sys"); }
-  else if(id==="aid"){ for(const t of G.party){ if(!t.dead){ t.aidBonus = 5; t.hp += 5; } } log(`Aid: the party gains +5 HP (8 hours).`,"good"); }
+  else if(id==="aid"){ for(const t of G.party){ if(!t.dead){ const delta = 5 - (t.aidBonus||0); t.aidBonus = 5; t.hp = Math.min(maxHp(t), t.hp + Math.max(0,delta)); } } log(`Aid: the party gains +5 max & current HP (8 hours).`,"good"); }
   else if(id==="guidance"){ G.guidanceFor = c.uid; log(`${c.name} is guided — their next dialogue/exploration skill check gains +1d4.`,"good"); }
-  else if(id==="revivify"){ const t = G.party.find(x=>x.dead); if(t){ t.dead=false; t.hp=1; log(`${t.name} is revived!`,"good"); } }
+  else if(id==="revivify"){ const t = G.party.find(x=>x.dead); if(t){ if(G.gold < 300){ log("Revivify needs a diamond worth 300 gp — not enough gold.","bad"); return; } G.gold -= 300; t.dead=false; t.downed=false; t.hp=1; t.deathSaves={s:0,f:0}; log(`${t.name} is revived! (300 gp diamond consumed)`,"good"); } }
   else log(`${c.name} casts ${sp.name}.`,"sys");
   openSpellsMenu(); refreshPanels(); saveGame();
 }
@@ -1940,13 +2446,14 @@ function openProgression(){
   for(let l=1;l<=8;l++){
     const feats = cls.features[l]||[];
     const unlocked = l<=c.level;
-    html += `<div class="tnode ${unlocked?"unlocked":"locked"}"><div class="tlvl">Level ${l}</div><div>${feats.length? feats.map(f=>esc(f)).join(" · ") : "<span class='dim'>—</span>"}${l===3?` · <b>Subclass: ${esc(cls.subclass.name)}</b>`:""}${(l===4||l===8)?" · <b>Ability Score Improvement / Feat</b>":""}</div></div>`;
+    html += `<div class="tnode ${unlocked?"unlocked":"locked"}"><div class="tlvl">Level ${l}</div><div>${feats.length? feats.map(f=>esc(f)).join(" · ") : "<span class='dim'>—</span>"}${l===3?` · <b>Subclass: ${esc(cls.subclass.name)}</b>`:""}${asiLevelsFor(c.classId).includes(l)?" · <b>Ability Score Improvement / Feat</b>":""}</div></div>`;
     if(l<8) html += `<div class="tlink ${l<c.level?"unlocked":""}"></div>`;
   }
   html += `</div><p class="dim">XP for next level: ${c.level<8? XP_TABLE[c.level] : "— (campaign cap 8)"}. Current XP: ${c.xp}.</p>`;
   html += `<button class="big-btn" onclick="closeModal()">Close</button>`;
   openModal(html);
 }
+function asiLevelsFor(classId){ return classId==="fighter"? [4,6,8] : [4,8]; }
 function openLevelUp(c){
   if(!c || c.level>=8) return;
   const newLevel = c.level+1;
@@ -1955,7 +2462,7 @@ function openLevelUp(c){
   html += `<p>Hit Points — roll your Hit Die (d${hd}) or take the average (${Math.floor(hd/2)+1}), plus Constitution modifier (${fmtMod(amod(c,"con"))}):</p>
     <button onclick="applyLevelUp('${c.uid}','roll')">🎲 Roll d${hd}</button> <button onclick="applyLevelUp('${c.uid}','avg')">Take average</button>`;
   if(newLevel===3) html += `<p><b>Subclass gained: ${CLASSES[c.classId].subclass.name}</b> — ${esc(Object.values(CLASSES[c.classId].subclass.features).join(" "))}</p>`;
-  if(newLevel===4||newLevel===8){
+  if(asiLevelsFor(c.classId).includes(newLevel)){
     html += `<h3>Ability Score Improvement or Feat</h3>
     <p>+2 to one ability: <select id="asi-one">${ABILITIES.map(a=>`<option value="${a}">${ABILITY_NAMES[a]}</option>`).join("")}</select>
     — or +1/+1: <select id="asi-a">${ABILITIES.map(a=>`<option value="${a}">${ABILITY_NAMES[a]}</option>`).join("")}</select> <select id="asi-b">${ABILITIES.map(a=>`<option value="${a}">${ABILITY_NAMES[a]}</option>`).join("")}</select>
@@ -1973,7 +2480,7 @@ function applyLevelUp(uid, mode, withAsi){
   const roll = mode==="roll"? rollDie(hd) : Math.floor(hd/2)+1;
   c.hpRolls.push(roll);
   c.level++;
-  if(c.level===3){ c.subclass = true; if(c.classId==="warlock") c.agonizing = true; log(`${c.name} gains the ${CLASSES[c.classId].subclass.name} subclass!`,"good"); }
+  if(c.level===3){ c.subclass = true; log(`${c.name} gains the ${CLASSES[c.classId].subclass.name} subclass!`,"good"); }
   if(withAsi){
     const feat = $("asi-feat")?.value;
     if(feat){ c.feats.push(feat); if(feat==="tough"){ /* maxHp handles */ } log(`${c.name} takes the feat: ${FEATS[feat].name}.`,"good"); }
@@ -1986,10 +2493,18 @@ function applyLevelUp(uid, mode, withAsi){
   }
   const after = maxHp(c);
   c.hp = Math.min(after, c.hp + (after-before));
+  // Levelling up grows resource MAXIMA but does not refill them (it is not a Long Rest):
+  // preserve how much of each resource was already spent.
+  const oldRes = Object.assign({}, c.res), oldMax = Object.assign({}, c.resMax||{});
+  const oldSlotsUsed = Object.assign({}, c.slotsUsed), oldPactUsed = c.pactUsed;
   resetResources(c, false);
-  // refresh resource maxima while preserving spent feel: full refresh on level up (generous)
-  resetResources(c, true); c.slotsUsed = {}; c.pactUsed = 0;
-  log(`<b>${c.name} is now level ${c.level}!</b> Max HP ${after}.`,"good");
+  for(const k of Object.keys(c.res)){
+    if(typeof c.res[k]==="number" && typeof oldRes[k]==="number") c.res[k] = Math.max(0, c.res[k] - Math.max(0, (oldMax[k]||0) - oldRes[k]));
+    else if(typeof c.res[k]==="boolean" && k in oldRes) c.res[k] = oldRes[k];
+  }
+  c.slotsUsed = oldSlotsUsed; c.pactUsed = oldPactUsed;
+  grantLevelFeatures(c);
+  log(`<b>${c.name} is now level ${c.level}!</b> Max HP ${after}. (Slots and resources are NOT refilled — rest for that.)`,"good");
   toast(`${c.name} reached level ${c.level}!`);
   closeModal();
   checkLevelUps();
@@ -2154,7 +2669,7 @@ function buildSpellPicks(){
   const el = $("spell-picks"); if(!el) return;
   const cls = CLASSES[createSel.classId];
   if(!cls.spellcasting){ el.innerHTML = ""; return; }
-  const cantrips = cls.cantrips||0;
+  const cantrips = cls.cantripsAt? cls.cantripsAt(1) : (cls.cantrips||0);
   const lim = createSel.classId==="paladin"||createSel.classId==="ranger"? 2 : (cls.prepared? cls.prepared(1) : cls.known? cls.known(1) : 4);
   const list = Object.entries(SPELLS).filter(([id,sp])=>sp.classes.includes(createSel.classId));
   el.innerHTML = `<h3>Starting Spells</h3>
@@ -2210,7 +2725,6 @@ function finishCreate(){
   const cantripPicks = [...document.querySelectorAll(".pick-cantrip:checked")].map(b=>b.value);
   const spellPicks = [...document.querySelectorAll(".pick-spell:checked")].map(b=>b.value);
   heroC.spellsKnown = [...cantripPicks, ...spellPicks, ...(heroC.bonusSpells||[])];
-  if(createSel.classId==="warlock") heroC.agonizing = true;
   if(createSel.speciesId==="human") heroC.inspiration = true;
   G = newGameState(heroC);
   G.gold = bg.gold + 10;
