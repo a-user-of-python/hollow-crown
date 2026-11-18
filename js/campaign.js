@@ -1,0 +1,417 @@
+// THE HOLLOW CROWN — original campaign: maps, shops, NPCs, dialogues, quests.
+// Story, characters and places are original. Rules data lives in data.js (SRD 5.2.1).
+"use strict";
+
+// Tile legend: # wall/rock  . floor  , grass  T tree (blocks, cover)  W water (blocks)
+// B bridge (floor)  D door (floor)  E exit  = road  _ wooden floor  % sand/ash
+const EMBERFORD_TILES = [
+"TTTTTTTTTTTTTTTTTETTTTTTTTTTTT",
+"T....,,,,.......,,,,......,,,T",
+"T.####.,,,...P..,,,,..####..,T",
+"T.#..#.,,,.......,,,..#..#..,T",
+"T.#D##.,,,..,,,..,,,..##D#..,T",
+"T......,,,.......,,,......,,,T",
+"T..,....,,,..,,,..,,,.....,,,T",
+"T.####....,,,,,,,,,,,..####..T",
+"T.#..D....,,,....,,,,..D..#..T",
+"T.####....,,,....,,,,..####..T",
+"E......,,,,......,,,,.......,E",
+"T..,....,,,.....,,,,,.....,,,T",
+"T.####....,,,.......,..####..T",
+"T.#..#....,,,..,,,....#..#...T",
+"T.##D#....,,,.......,.##D#...T",
+"T......,,,,......,,,,........T",
+"T..,,,,....,,,,....,,,,..,,,,T",
+"T....,,,,......,,,,....,,,,,.T",
+"TTTTTTTTTTTTTTTTTETTTTTTTTTTTT",
+];
+const MILL_TILES = [
+"####################",
+"#____#......#......#",
+"#_.._#......#..C...#",
+"#____D......D......#",
+"#....#......#......#",
+"######..##..####.###",
+"#..................#",
+"#..T.....##........#",
+"#........##....T...#",
+"#..................#",
+"####E###############",
+];
+const MILL_CELLAR_TILES = [
+"################",
+"#..............#",
+"#..##......##..#",
+"#..##..C...##..#",
+"#..............#",
+"#......##......#",
+"#......##......#",
+"#..............#",
+"#..##......##..#",
+"#..##..E...##..#",
+"################",
+];
+const TAVERN_CELLAR_TILES = [
+"############",
+"#..........#",
+"#..##..##..#",
+"#..##..##..#",
+"#..........#",
+"#..##..##..#",
+"#....E.....#",
+"############",
+];
+const CHAPEL_TILES = [
+"########################",
+"#..........##..........#",
+"#..####....##....####..#",
+"#..#..#..........#..#..#",
+"#..#D##..........##D#..#",
+"#......................#",
+"#.....####..####.......#",
+"#.....#..####..#.......#",
+"#.....D........D...C...#",
+"#.....#........#.......#",
+"#.....####..####.......#",
+"#......................#",
+"#..####..........####..#",
+"#..#..D..........D..#..#",
+"#..####....EE....####..#",
+"########################",
+];
+const WHISPERWOOD_TILES = [
+"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+"T,,..TT...,,,,...TT....,,,,...TT",
+"T,..TTT..,====..,TTT..,====..,TT",
+"T...T....,====....T...,====...,T",
+"TE.......,====........,====....T",
+"T..,......====....TT..,====..,TT",
+"T..TT....,====...TTTT..====...TT",
+"T..TT..,..====....TT...====..,TT",
+"T......,,,,====........====....T",
+"T..,..,....====..,......====..TT",
+"T..TT......====..TT....====..,TT",
+"T..TT..,..,====..TT..,====...,TT",
+"T.....,....====.......====....,T",
+"T..,..TT..,====..,TT..====..,TTT",
+"T..TTTT....====..TT...====....TT",
+"T....T....,====.....,====..,..TT",
+"T.....,,,,,,,,,,,,,,,,,,,,....TT",
+"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+];
+const IRONDEEP_TILES = [
+"##########################",
+"#..........##............#",
+"#..####....##....####....#",
+"#..#..#..........#..#....#",
+"#..#D##..........##D#....#",
+"#........................#",
+"#.....####..####.........#",
+"#.....#..####..#....C....#",
+"#.....D........D.........#",
+"#.....#........#.........#",
+"#.....####..####.........#",
+"#........................#",
+"#..####..........####....#",
+"#..#..D..........D..#....#",
+"#..####....##....####....#",
+"#..........##............#",
+"#....C.....##......C.....#",
+"##############E###########",
+];
+const CRYPT_TILES = [
+"##########################",
+"#..........##............#",
+"#..####....##....####....#",
+"#..#..#..........#..#....#",
+"#..#D##..........##D#....#",
+"#........................#",
+"#.....####..####.........#",
+"#.....#..####..#.........#",
+"#.....D........D....C....#",
+"#.....#........#.........#",
+"#.....####..####.........#",
+"#........................#",
+"#..####..........####....#",
+"#..#..D..........D..#....#",
+"#..####....##....####....#",
+"#..........##............#",
+"#..........##.....C......#",
+"##############E###########",
+];
+
+const MAPS = {
+  emberford:{name:"Emberford",outdoor:true,tiles:EMBERFORD_TILES,
+    exits:[
+      {x:17,y:0,to:"irondeep",tx:13,ty:16,label:"North road — the Irondeep Mine"},
+      {x:0,y:10,to:"whisperwood",tx:30,ty:8,label:"West road — the Whispering Wood"},
+      {x:29,y:10,to:"mill",tx:4,ty:9,label:"East path — the Old Mill"},
+      {x:17,y:18,to:"chapel",tx:11,ty:13,label:"South path — the Sunken Chapel"},
+      {x:26,y:14,to:"tavern_cellar",tx:5,ty:5,label:"Tavern cellar stairs"},
+      {x:24,y:4,to:"crypt",tx:13,ty:16,label:"Temple vaults — the Royal Crypts",requires:"MQ6"},
+    ],
+    npcs:[
+      {id:"mayor",x:14,y:5},{id:"lyra",x:23,y:3},{id:"smith",x:3,y:8},{id:"shopkeep",x:25,y:8},
+      {id:"apothecary",x:3,y:13},{id:"innkeep",x:23,y:13},{id:"widow",x:8,y:15},{id:"farmer",x:21,y:15},
+      {id:"guard",x:16,y:10},{id:"villager1",x:12,y:7},{id:"villager2",x:19,y:12},
+    ],
+    encounters:[
+      {id:"fold_wolves",x:6,y:16,r:3,quest:"SQ4",stage:1,monsters:[["wolf",5,15],["wolf",7,17],["wolf",4,16]],loot:{gold:0,items:[]}},
+    ],
+    chests:[], start:{x:15,y:10}},
+  mill:{name:"The Old Mill",tiles:MILL_TILES,
+    exits:[{x:4,y:10,to:"emberford",tx:28,ty:10,label:"Back to Emberford"},{x:17,y:2,to:"mill_cellar",tx:8,ty:8,label:"Cellar stairs, behind the stores"}],
+    npcs:[], start:{x:4,y:9},
+    encounters:[
+      {id:"mill_goblins",x:10,y:7,r:4,quest:"MQ1",stage:1,monsters:[["goblin",9,6],["goblin",12,6],["goblin",11,8],["goblin",8,8]],loot:{gold:18,items:["potion_healing"]}},
+    ],
+    chests:[{x:16,y:2,loot:{gold:25,items:["potion_healing"]}}]},
+  mill_cellar:{name:"Mill Cellar",tiles:MILL_CELLAR_TILES,
+    exits:[{x:8,y:9,to:"mill",tx:16,ty:3,label:"Up to the mill"}],
+    npcs:[], start:{x:8,y:8},
+    encounters:[
+      {id:"cellar_chief",x:8,y:3,r:4,quest:"MQ1",stage:2,monsters:[["bugbear",8,2],["goblin",6,3],["goblin",10,3]],loot:{gold:40,items:["mill_key","potion_greater"]}},
+    ],
+    chests:[{x:7,y:3,loot:{gold:60,items:["longsword_1"]}}]},
+  tavern_cellar:{name:"Tavern Cellar",tiles:TAVERN_CELLAR_TILES,
+    exits:[{x:5,y:6,to:"emberford",tx:26,ty:15,label:"Up to the tavern"}],
+    npcs:[], start:{x:5,y:5},
+    encounters:[
+      {id:"cellar_rats",x:5,y:2,r:4,quest:"SQ1",stage:1,monsters:[["giant_rat",4,1],["giant_rat",6,1],["giant_rat",2,2],["giant_rat",9,2]],loot:{gold:5,items:[]}},
+    ],
+    chests:[]},
+  chapel:{name:"The Sunken Chapel",tiles:CHAPEL_TILES,
+    exits:[{x:11,y:14,to:"emberford",tx:17,ty:17,label:"Back to Emberford"},{x:12,y:14,to:"emberford",tx:17,ty:17,label:"Back to Emberford"}],
+    npcs:[], start:{x:11,y:13},
+    encounters:[
+      {id:"chapel_dead1",x:11,y:10,r:4,quest:"MQ2",stage:1,monsters:[["skeleton",10,9],["skeleton",13,9],["zombie",11,8]],loot:{gold:12,items:[]}},
+      {id:"chapel_dead2",x:18,y:5,r:4,quest:"MQ2",stage:1,monsters:[["skeleton",18,5],["ghoul",19,6],["zombie",17,6]],loot:{gold:20,items:["holy_water"]}},
+      {id:"chapel_abbot",x:11,y:3,r:4,quest:"MQ2",stage:2,monsters:[["drowned_abbot",10,1],["skeleton",9,3],["skeleton",13,3]],loot:{gold:80,items:["crown_shard_band","sun_medallion","mace_1"]}},
+    ],
+    chests:[{x:20,y:8,loot:{gold:45,items:["potion_greater","holy_water"]}}]},
+  whisperwood:{name:"The Whispering Wood",outdoor:true,tiles:WHISPERWOOD_TILES,
+    exits:[{x:1,y:4,to:"emberford",tx:1,ty:10,label:"East — back to Emberford"}],
+    npcs:[{id:"fenn",x:15,y:8},{id:"merchant",x:26,y:3}],
+    start:{x:2,y:4},
+    encounters:[
+      {id:"wood_wolves",x:25,y:4,r:3,quest:"SQ2",stage:1,monsters:[["wolf",26,2],["wolf",27,4],["wolf",25,5]],loot:{gold:0,items:[]}},
+      {id:"wood_bandits1",x:14,y:12,r:4,quest:"MQ3",stage:1,monsters:[["bandit",13,11],["bandit",15,11],["bandit",14,13]],loot:{gold:30,items:["potion_healing"]}},
+      {id:"wood_bandits2",x:22,y:13,r:4,quest:"MQ3",stage:1,monsters:[["bandit",22,12],["bugbear",23,14],["bandit",21,14]],loot:{gold:35,items:[]}},
+      {id:"rusk_camp",x:6,y:13,r:4,quest:"MQ3",stage:2,monsters:[["captain_rusk",6,12],["bandit",4,13],["bandit",8,13]],loot:{gold:120,items:["crown_shard_jewel","rapier_1"]}},
+    ],
+    chests:[{x:28,y:15,loot:{gold:50,items:["shortbow_1"]}}]},
+  irondeep:{name:"The Irondeep Mine",tiles:IRONDEEP_TILES,
+    exits:[{x:14,y:17,to:"emberford",tx:17,ty:1,label:"Out — back to Emberford"}],
+    npcs:[], start:{x:13,y:16},
+    encounters:[
+      {id:"mine_hobs1",x:12,y:12,r:4,quest:"MQ4",stage:1,monsters:[["hobgoblin",11,11],["hobgoblin",13,11],["hobgoblin",12,13]],loot:{gold:45,items:[]}},
+      {id:"mine_hobs2",x:3,y:5,r:4,quest:"SQ6",stage:1,monsters:[["hobgoblin",2,3],["hobgoblin",1,4]],loot:{gold:30,items:["potion_greater"]}},
+      {id:"mine_forge",x:21,y:4,r:5,quest:"MQ4",stage:2,monsters:[["forge_ogre",21,3],["hobgoblin",18,5],["hobgoblin",22,5]],loot:{gold:200,items:["crown_shard_thorns","greataxe_1","chain_mail_1"]}},
+    ],
+    chests:[{x:20,y:7,loot:{gold:70,items:["potion_superior"]}},{x:5,y:16,loot:{gold:40,items:[]}},{x:21,y:16,loot:{gold:55,items:["warhammer_1"]}}]},
+  emberford_siege:{name:"Emberford — The Pale Harvest",outdoor:true,siege:true,tiles:EMBERFORD_TILES,
+    exits:[{x:17,y:0,to:"irondeep",tx:13,ty:16,label:"North road"},{x:0,y:10,to:"whisperwood",tx:30,ty:8,label:"West road"},{x:29,y:10,to:"mill",tx:4,ty:9,label:"East path"},{x:17,y:18,to:"chapel",tx:11,ty:13,label:"South path"}],
+    npcs:[{id:"mayor",x:14,y:5},{id:"lyra_s",x:15,y:6},{id:"guard",x:16,y:10}],
+    start:{x:15,y:10},
+    encounters:[
+      {id:"siege_wave1",x:15,y:3,r:5,quest:"MQ5",stage:1,monsters:[["skeleton",14,2],["skeleton",16,2],["zombie",15,4],["zombie",13,3]],loot:{gold:0,items:[]}},
+      {id:"siege_wave2",x:8,y:10,r:5,quest:"MQ5",stage:1,monsters:[["ghoul",7,9],["skeleton",8,11],["wight",9,10]],loot:{gold:0,items:["potion_greater"]}},
+      {id:"siege_wave3",x:22,y:10,r:5,quest:"MQ5",stage:2,monsters:[["wight",22,9],["ghoul",23,11],["skeleton",21,11],["cultist_fanatic",22,12]],loot:{gold:60,items:["potion_superior"]}},
+    ],
+    chests:[]},
+  crypt:{name:"The Royal Crypts — The Grave Garden",tiles:CRYPT_TILES,
+    exits:[{x:14,y:17,to:"emberford",tx:17,ty:17,label:"Up — back to Emberford"}],
+    npcs:[{id:"vespera_pre",x:13,y:3}],
+    start:{x:13,y:16},
+    encounters:[
+      {id:"crypt_dead1",x:12,y:12,r:4,quest:"MQ6",stage:1,monsters:[["wight",11,11],["skeleton",13,11],["ghoul",12,13]],loot:{gold:50,items:[]}},
+      {id:"crypt_dead2",x:3,y:5,r:4,quest:"MQ6",stage:1,monsters:[["ghoul",2,3],["ghoul",1,4],["skeleton",2,5]],loot:{gold:40,items:["potion_superior"]}},
+      {id:"crypt_vespera",x:13,y:3,r:3,quest:"MQ6",stage:2,monsters:[["vespera",13,2],["wight",11,3],["wight",15,3]],loot:{gold:0,items:[]}},
+    ],
+    chests:[{x:20,y:8,loot:{gold:100,items:["staff_ember"]}},{x:19,y:16,loot:{gold:80,items:["leather_1"]}}]},
+};
+
+// ---------------- SHOPS ----------------
+const SHOPS = {
+  smith:{name:"Bramma's Forge (Blacksmith)",stock:["longsword","battleaxe","warhammer","greataxe","greatsword","rapier","shortsword","dagger","spear","longbow","shortbow","hand_crossbow","chain_mail","scale","breastplate","shield","chain_shirt","studded","longsword_1","warhammer_1"]},
+  general:{name:"Pell & Daughter, General Goods",stock:["dagger","club","quarterstaff","javelin","sling","light_crossbow","leather","padded","rope","torch","rations","thieves_tools","healers_kit","potion_healing"]},
+  apothecary:{name:"Sister Wren's Apothecary",stock:["potion_healing","potion_greater","potion_superior","antitoxin","holy_water","alchemist_fire","healers_kit"]},
+};
+
+// ---------------- NPCS ----------------
+// Companions: lyra (Cleric of the Dawn, Life Domain), fenn (Halfling Rogue, Thief)
+const COMPANIONS = {
+  lyra:{name:"Lyra",title:"Cleric of the Dawn",classId:"cleric",species:"human",background:"acolyte",
+    abilities:{str:13,dex:10,con:14,int:11,wis:16,cha:12},weapon:"mace",armor:"chain_shirt",shield:true,
+    bio:"A priest of the Dawn who has buried too many of Emberford's dead this year — and noticed some graves are empty."},
+  fenn:{name:"Fenn",title:"Rogue of the Broken Road",classId:"rogue",species:"halfling",background:"criminal",
+    abilities:{str:9,dex:17,con:13,int:12,wis:11,cha:14},weapon:"shortsword",armor:"leather",shield:false,
+    bio:"A cheerful ex-highwayman who robbed Captain Rusk's gang once too often and would like help staying alive."},
+};
+
+const NPCS = {
+  mayor:{name:"Mayor Edda Thorn",role:"Mayor of Emberford",greeting:"mayor_start"},
+  lyra:{name:"Lyra, Cleric of the Dawn",role:"Temple of the Dawn",greeting:"lyra_start"},
+  lyra_s:{name:"Lyra",role:"Cleric of the Dawn",greeting:"lyra_siege"},
+  smith:{name:"Bramma Holt",role:"Blacksmith",greeting:"smith_start"},
+  shopkeep:{name:"Pell Underbough",role:"General Store",greeting:"shop_start"},
+  apothecary:{name:"Sister Wren",role:"Apothecary",greeting:"apothecary_start"},
+  innkeep:{name:"Tam Rill",role:"Innkeeper, The Drowned Flagon",greeting:"inn_start"},
+  widow:{name:"Widow Ansel",role:"Villager",greeting:"widow_start"},
+  farmer:{name:"Farmer Cobb",role:"Sheep farmer",greeting:"farmer_start"},
+  guard:{name:"Gate Guard Sella",role:"Town watch",greeting:"guard_start"},
+  villager1:{name:"Old Nan Peth",role:"Villager",greeting:"nan_start"},
+  villager2:{name:"Jory the Carter",role:"Villager",greeting:"jory_start"},
+  fenn:{name:"Fenn",role:"A nervous traveller",greeting:"fenn_start"},
+  merchant:{name:"Merchant Vael",role:"A stranded merchant",greeting:"merchant_start"},
+  vespera_pre:{name:"A Pale Figure",role:"She is waiting for you",greeting:"vespera_start"},
+};
+
+// Dialogue node format: {text, options:[{t, goto?, do?, if?, check?{skill,dc,ok,fail}}]}
+// do-effects are interpreted by game.js: quest:ID:stage | join:ID | shop:ID | rest | give:ITEM | gold:N | flag:X | combat:ENC | ending:destroy|claim
+const DIALOGUES = {
+  mayor_start:{text:"Mayor Edda Thorn grips your arm. \"Thank the Dawn you've come. Goblins have taken the old mill — our flour, our stores, everything. And Lyra at the temple says the graveyard's been... disturbed. Clear the mill for us. Please.\"",options:[
+    {t:"I'll clear the mill.",do:"quest:MQ1:1",goto:"mayor_accept"},
+    {t:"What's this about the graveyard?",goto:"mayor_grave"},
+    {t:"What will the town pay?",check:{skill:"Persuasion",dc:10,ok:"mayor_pay_ok",fail:"mayor_pay_fail"}},
+  ]},
+  mayor_accept:{text:"\"Bless you. The mill's east of town. Lyra insists on going with whoever goes — she's at the temple, north-east. Take her. She knows the dead, and I fear you'll meet some.\"",options:[{t:"(Leave)",do:"flag:met_mayor"}]},
+  mayor_grave:{text:"\"Three graves dug UP, from the inside by the look of it, and the chapel south of town flooded black overnight. Old Nan says a pale woman walks the fields at dusk, counting. Counting what, I don't want to know.\"",options:[{t:"I'll handle the mill first.",goto:"mayor_start"}]},
+  mayor_pay_ok:{text:"She sighs. \"Fine — the town purse holds 40 gold for the mill, and it's yours when it's done. We're not rich, but we're not cheats either.\"",options:[{t:"Deal. I'll clear the mill.",do:"quest:MQ1:1;flag:mayor_bonus",goto:"mayor_accept"}]},
+  mayor_pay_fail:{text:"\"Pay? The goblins took our flour — we're paying in gratitude and whatever you find out there. That's the offer.\"",options:[{t:"Fine. I'll clear the mill.",do:"quest:MQ1:1",goto:"mayor_accept"}]},
+  lyra_start:{text:"Lyra is polishing a mace that has clearly never been polished before. \"You're the one Edda sent for? Good. The dead aren't resting, and a cleric who ignores that isn't much of a cleric. I'm coming with you — to the mill, and wherever this leads.\"",options:[
+    {t:"Glad to have you, Lyra.",do:"join:lyra",goto:"lyra_joined"},
+    {t:"What do you know about the graves?",goto:"lyra_graves"},
+  ]},
+  lyra_joined:{text:"\"Then we start with the mill, east of town. Goblins I can handle. It's what's been waking the dead that frightens me.\" (Lyra joined your party! She fights beside you and heals in combat.)",options:[{t:"(Leave)"}]},
+  lyra_graves:{text:"\"Three graves, empty. No tracks away — the dead don't leave tracks when they're called. Someone is gathering them. For what, I can't say. An army doesn't need to eat. Think on that.\"",options:[{t:"Then we stop them.",goto:"lyra_start"}]},
+  lyra_siege:{text:"Lyra's armour is scorched, her voice steady. \"They came at dusk, all our dead at once. Hold the town, and then we end this — the crypts under the old castle hill, north through the temple vaults. I'll be right behind you.\"",options:[{t:"(Leave)"}]},
+  smith_start:{text:"Bramma Holt doesn't look up from the anvil. \"Buying or gawping? Steel's honest, prices are honest. If you're heading east, take something with an edge — goblins don't scare off.\"",options:[
+    {t:"Show me your wares.",do:"shop:smith"},
+    {t:"Any work for me?",goto:"smith_work"},
+    {t:"(Leave)"},
+  ]},
+  smith_work:{text:"\"Work? Aye — the mine road north's gone quiet, and quiet from Irondeep is never good. If you're ever up there, tell the hobgoblins Bramma says hello. With an axe.\"",options:[{t:"(Leave)"}]},
+  shop_start:{text:"\"Pell & Daughter, purveyors of everything a traveller needs and several things they don't! Rope? Torches? A potion for the road?\"",options:[
+    {t:"Show me your goods.",do:"shop:general"},
+    {t:"(Leave)"},
+  ]},
+  apothecary_start:{text:"Sister Wren labels bottles in a hand like copperplate. \"Potions, antidotes, holy water. The water's been selling out, if you take my meaning. People are frightened.\"",options:[
+    {t:"Show me your stock.",do:"shop:apothecary"},
+    {t:"(Leave)"},
+  ]},
+  inn_start:{text:"Tam Rill wipes a glass. \"Rats! In MY cellar! Big as cats and twice as rude. Clear them out and there's 25 gold and my eternal gratitude — gratitude's worth about 25 gold too.\"",options:[
+    {t:"I'll clear your cellar.",do:"quest:SQ1:0",goto:"inn_accept"},
+    {t:"(Leave)"},
+  ]},
+  inn_accept:{text:"\"The cellar door's behind the bar — mind the barrels. And the rats. Mostly the rats.\" (Head into the tavern cellar: use the door tile behind the inn, east side of Emberford.)",options:[{t:"(Leave)"}]},
+  widow_start:{text:"Widow Ansel coughs, hard. \"It's my chest, love. Sister Wren's strong tonic — a Potion of Greater Healing — would fix it, but my purse is empty since the mill stopped. If you ever have one to spare...\"",options:[
+    {t:"Give her a Potion of Greater Healing.",do:"givequest:SQ3:potion_greater",goto:"widow_healed",if:"hasitem:potion_greater"},
+    {t:"I'll find one.",do:"quest:SQ3:0",goto:"widow_hope"},
+    {t:"(Leave)"},
+  ]},
+  widow_hope:{text:"\"You're kind. Wren sells them at the apothecary, south-west. Don't go spending on an old woman if the road needs it more.\"",options:[{t:"(Leave)"}]},
+  widow_healed:{text:"She drinks, breathes deep, and laughs like a girl. \"Oh! Oh, that's the stuff. Here — my husband's lucky coin purse. He'd want it used by someone living.\" (+60 gold)",options:[{t:"(Leave)"}]},
+  farmer_start:{text:"Farmer Cobb leans on his crook, glaring south. \"Wolves took two ewes last night, bold as tax collectors. They're denning in my south field. Drive them off and the flock's gratitude is yours — 30 gold of it.\"",options:[
+    {t:"I'll drive them off.",do:"quest:SQ4:0",goto:"farmer_accept"},
+    {t:"(Leave)"},
+  ]},
+  farmer_accept:{text:"\"South field, past my fence. Mind the big one — she's got a scar like a plough line.\"",options:[{t:"(Leave)"}]},
+  guard_start:{text:"Guard Sella nods at the roads. \"East: mill, goblins. South: chapel, flooded and worse. West: the Whispering Wood — bandits under a Captain Rusk, and worse things with wings in the dark. North: Irondeep mine, hobgoblins. Sleep at the inn to recover; the Dawn knows you'll need it.\"",options:[
+    {t:"How do I rest?",goto:"guard_rest"},
+    {t:"(Leave)"},
+  ]},
+  guard_rest:{text:"\"Speak to Tam at the inn — or just press R anywhere safe for a Short Rest if you have Hit Dice, and take a Long Rest at the inn to get everything back. Mind: a Long Rest is 8 hours, and the world's not frozen while you sleep.\"",options:[{t:"(Leave)"}]},
+  nan_start:{text:"Old Nan Peth squints. \"I seen her, the Pale Shepherdess. Walks the fields counting the dead like a shepherd counts sheep. Vespera Thane she was — chaplain to the old king. Buried forty years, they said. They said wrong.\"",options:[{t:"(Leave)"}]},
+  jory_start:{text:"Jory the Carter spits. \"Road west's death now. Rusk's gang took my whole wagon — flour for the town! If you're the sort who settles scores, settle that one.\"",options:[{t:"(Leave)"}]},
+  fenn_start:{text:"A halfling backs away from the wolf-prints, hands up. \"Don't shoot! Fenn, honest traveller — well. Mostly honest. I was WITH Rusk's gang, past tense, and now Rusk wants my head for leaving. You're clearing the wood? Then I'm your man. I know every path Rusk walks.\"",options:[
+    {t:"Join me, Fenn. Stay close.",do:"join:fenn",goto:"fenn_joined"},
+    {t:"Why'd you leave the gang?",goto:"fenn_why"},
+  ]},
+  fenn_joined:{text:"\"You won't regret it! Well — Rusk might make you regret it. He found something shiny in a barrow, a pale gem, and he's been... different since. Meaner. And he was not a delight before.\" (Fenn joined your party!)",options:[{t:"(Leave)"}]},
+  fenn_why:{text:"\"Rusk found a pale gem in a barrow and started talking to it. Then the gang's dead started... not staying in their graves back at camp. I run from a lot of things. I ran from that.\"",options:[{t:"Join me and we'll end it.",do:"join:fenn",goto:"fenn_joined"}]},
+  merchant_start:{text:"Merchant Vael huddles by his overturned cart. \"Wolves! My guards ran, my goods are scattered — if you clear the beasts I'll pay 50 gold and open my pack to you at fair prices.\"",options:[
+    {t:"Stay here. I'll deal with the wolves.",do:"quest:SQ2:1",goto:"merchant_wait"},
+    {t:"(Leave)"},
+  ]},
+  merchant_wait:{text:"\"Hurry — I hear them circling. North-east of here, by the old stones.\"",options:[{t:"(Leave)"}]},
+  merchant_saved:{text:"Vael bows so low his hat falls off. \"My life and my livelihood! 50 gold, as promised, and my thanks. The road owes you.\"",options:[{t:"(Leave)"}]},
+  vespera_start:{text:"The pale woman stands among the open graves like a gardener among beds. Her voice is gentle, and that is the worst of it. \"Little spark. I have the Band, the Jewel, the Thorns — no. You have them, don't you? Then give them here, and no child of Aldermere will ever march to war again. The dead will hold the walls. The dead cannot die.\"",options:[
+    {t:"The dead should rest, Vespera.",goto:"vespera_argue"},
+    {t:"You raise slaves, not soldiers.",check:{skill:"Persuasion",dc:16,ok:"vespera_doubt",fail:"vespera_argue"}},
+    {t:"This ends now. (Fight!)",do:"combat:crypt_vespera"},
+  ]},
+  vespera_doubt:{text:"For a moment — a moment — her hands shake. \"I buried a hundred boys in the Ashen Field war. A hundred. I swore...\" Then her face hardens like frost. \"No. Sentiment is what fills graves. COME, MY FLOCK.\"",options:[{t:"(Fight!)",do:"combat:crypt_vespera"}]},
+  vespera_argue:{text:"\"Rest?\" She laughs like a bell under water. \"The living had their chance and spent it on wars. COME, MY FLOCK. Show this spark the future.\"",options:[{t:"(Fight!)",do:"combat:crypt_vespera"}]},
+  ending_destroy:{text:"You lift the Hollow Crown — whole for one breathless moment — and dash it against the grave-garden's stone. The light goes out of a thousand patient eyes. Across Aldermere, the dead lie down like wheat after wind, and rest. Emberford rings the chapel bell until dawn. THE END — thank you for playing The Hollow Crown.",options:[{t:"(See your story)",do:"ending:destroy"}]},
+  ending_claim:{text:"The Crown settles on your brow like it was always yours. The Ashen Host kneels in the dark, waiting for your word. Aldermere will never fear war again — and never again be quite sure whether its guardian is its king, or its jailer. THE END — thank you for playing The Hollow Crown.",options:[{t:"(See your story)",do:"ending:claim"}]},
+};
+
+// ---------------- QUESTS ----------------
+const QUESTS = {
+  MQ1:{name:"Trouble at the Mill",main:true,stages:[
+    "Speak with Mayor Edda Thorn in Emberford.",
+    "Clear the goblins from the Old Mill (east of town).",
+    "Defeat the goblin chief in the mill cellar.",
+    "Report back to Mayor Thorn."],
+    rewards:{xp:250,gold:40}},
+  MQ2:{name:"The Sunken Chapel",main:true,stages:[
+    "Enter the Sunken Chapel (south of Emberford).",
+    "Clear the undead from the chapel.",
+    "Destroy the Drowned Abbot and claim the Band of the Hollow Crown.",
+    "Return to Emberford — the road west is calling."],
+    rewards:{xp:450,gold:60}},
+  MQ3:{name:"The Thorn of the Road",main:true,stages:[
+    "Enter the Whispering Wood (west road) and find Fenn.",
+    "Break Captain Rusk's bandit patrols.",
+    "Defeat Captain Rusk and claim the Jewel of the Hollow Crown.",
+    "Word comes from the north: Irondeep has gone silent."],
+    rewards:{xp:650,gold:80}},
+  MQ4:{name:"Irondeep",main:true,stages:[
+    "Enter the Irondeep Mine (north road).",
+    "Clear the hobgoblin vanguard.",
+    "Defeat Ghorza the Forge-Tyrant and claim the Thorns of the Hollow Crown.",
+    "Return to Emberford with all three Shards."],
+    rewards:{xp:900,gold:100}},
+  MQ5:{name:"The Pale Harvest",main:true,stages:[
+    "Emberford is under attack! Drive back the first wave of the Ashen Host.",
+    "Hold the town against the second wave.",
+    "Defeat the Harvest's champions in the final wave.",
+    "Vespera has withdrawn to the Royal Crypts. Follow her. (Enter via the temple vaults — north-east exit of Emberford now leads down.)"],
+    rewards:{xp:1100,gold:0}},
+  MQ6:{name:"The Grave Garden",main:true,stages:[
+    "Enter the Royal Crypts.",
+    "Fight through the Grave Garden's guardians.",
+    "Confront Vespera Thane, the Pale Shepherdess.",
+    "Decide the fate of the Hollow Crown."],
+    rewards:{xp:1500,gold:0}},
+  SQ1:{name:"Rats in the Cellar",stages:["Clear the giant rats from Tam Rill's tavern cellar.","Return to Tam Rill."],rewards:{xp:100,gold:25}},
+  SQ2:{name:"The Missing Merchant",stages:["Find Merchant Vael in the Whispering Wood.","Kill the wolves circling his cart.","Speak with Vael."],rewards:{xp:200,gold:50}},
+  SQ3:{name:"A Widow's Medicine",stages:["Bring Widow Ansel a Potion of Greater Healing (Sister Wren sells them)."],rewards:{xp:150,gold:60}},
+  SQ4:{name:"Wolves at the Fold",stages:["Drive the wolves from Farmer Cobb's south field.","Return to Farmer Cobb."],rewards:{xp:150,gold:30}},
+  SQ5:{name:"The Sunken Bell",stages:["After cleansing the chapel, search its east alcove chest for the chapel's lost bell-clapper and treasure."],rewards:{xp:100,gold:0}},
+  SQ6:{name:"Irondeep Stragglers",stages:["Clear the hobgoblin side-chamber in the Irondeep Mine (west rooms)."],rewards:{xp:250,gold:30}},
+};
+
+// ---------------- Completion & companion dialogue nodes ----------------
+Object.assign(DIALOGUES, {
+  mayor_mq1_done:{text:"Mayor Thorn looks at the mill key in your hand like it's the keys to heaven. \"The mill is ours again — and you found the chief's lair. Emberford pays its debts.\" She presses the town's reward into your hand. \"But Lyra says the chapel south flooded black the same night the goblins came. Whatever's waking the dead is down there. The Sunken Chapel. Go carefully.\"",options:[
+    {t:"We'll cleanse the chapel.",do:"complete:MQ1;quest:MQ2:0",goto:"mayor_mq2"},
+  ]},
+  mayor_mq2:{text:"\"And take this — town funds for the road.\" She hesitates. \"Old Nan says the pale woman counts graves. When you find what's down there... end it.\"",options:[{t:"(Leave)"}]},
+  mayor_busy:{text:"\"Emberford endures because people like you walk the roads. The chapel, the wood, the mine — all of it leads somewhere dark. Keep going.\"",options:[{t:"(Leave)"}]},
+  inn_done:{text:"Tam Rill slides a tankard across. \"Heard the squeaking stop! 25 gold, as promised — and you'll always have a bed here. Rest whenever you need: a Long Rest here restores everything.\"",options:[
+    {t:"Thanks, Tam.",do:"complete:SQ1"},
+    {t:"I need a room. (Long Rest — free for heroes)",do:"rest",goto:"inn_done"},
+  ]},
+  inn_busy:{text:"\"The rats are still down there — I can hear them plotting. Cellar stairs are right there, east side of the bar.\"",options:[{t:"(Leave)"}]},
+  farmer_done:{text:"Cobb counts his sheep twice, grinning. \"All present! 30 gold and my thanks. Bold wolves, dead wolves — that's the order of things restored.\"",options:[{t:"Thanks, Cobb.",do:"complete:SQ4"}]},
+  farmer_busy:{text:"\"South field, friend. Mind the scarred one.\"",options:[{t:"(Leave)"}]},
+  widow_after:{text:"Widow Ansel is up and sweeping her step, hale as spring. \"Bless you, love. Emberford takes care of its own — and now you're one of its own.\"",options:[{t:"(Leave)"}]},
+  lyra_chat:{text:"Lyra adjusts her shield strap. \"The Dawn's light is just the world's way of saying the night didn't win. Ask me if you need the road explained — or if you need healing, that's literally my calling. (Companions recover fully on a Long Rest, like you.)\"",options:[{t:"(Leave)"}]},
+  fenn_chat:{text:"Fenn is juggling three apples. He drops all three. \"Right. Serious face. Rusk's camp is the far west of the wood, past my old patrols. Bring a light — and maybe don't mention my name until after the fighting.\"",options:[{t:"(Leave)"}]},
+  crown_choice:{text:"The Hollow Crown hangs in the cold air above Vespera's still form, whole at last: Band, Jewel, Thorns. It is patient. It has always been patient. Every dead soldier of Aldermere waits on your word.",options:[
+    {t:"Destroy the Crown. Let the dead rest.",goto:"ending_destroy"},
+    {t:"Take the Crown. Aldermere will never fall.",goto:"ending_claim"},
+  ]},
+});
