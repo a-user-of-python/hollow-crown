@@ -285,6 +285,7 @@ function passable(map,x,y){ return !BLOCKED.has(tileAt(map,x,y)); }
 function mapNPCs(){ return (curMap.npcs||[]).filter(n=>npcVisible(n.id)); }
 function npcVisible(id){
   if(id==="fenn" && G.companions.fenn) return false;
+  if(id==="lyra" && G.companions.lyra) return false; // joined Lyra leaves her temple post (she was previously duplicated AND boxed the hero in)
   if(id==="lyra_s") return G.companions.lyra; // siege Lyra is a visual stand-in; real Lyra is in party
   if(id==="vespera_pre" && G.encountersDone["crypt_vespera"]) return false;
   if(id==="merchant" && questStage("SQ2")>=2) return true;
@@ -298,9 +299,17 @@ function enterMap(mapId, tx, ty){
   curMap = Object.assign({id}, MAPS[id]);
   const h = hero();
   h.x = tx; h.y = ty;
-  // companions trail behind
-  let ox = tx, oy = ty;
-  for(const c of G.party){ if(c===h) continue; c.x = ox; c.y = Math.min(curMap.tiles.length-1, oy+1); if(!passable(curMap,c.x,c.y)) c.x = Math.max(0,ox-1); }
+  // companions trail behind: each goes on the nearest free passable tile to
+  // the entry point (the old fixed ty+1 spot could be a wall or a door tile)
+  for(const c of G.party){
+    if(c===h) continue;
+    let placed = false;
+    for(let r=1;r<=3 && !placed;r++) for(let yy=ty-r;yy<=ty+r && !placed;yy++) for(let xx=tx-r;xx<=tx+r;xx++){
+      if(Math.max(Math.abs(xx-tx),Math.abs(yy-ty))!==r) continue;
+      if(passable(curMap,xx,yy) && !G.party.some(p=>p!==c&&!p.dead&&p.x===xx&&p.y===yy)){ c.x=xx; c.y=yy; placed=true; }
+    }
+    if(!placed){ c.x = tx; c.y = ty; }
+  }
   onEnterMap(id);
   refreshAll(); saveGame();
 }
@@ -423,7 +432,15 @@ function drawMap(){
     ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.strokeRect(px+0.5,py+0.5,ts-1,ts-1);
     if(t==="T"){ ctx.fillStyle="#2e5d27"; ctx.beginPath(); ctx.arc(px+ts/2,py+ts/2,ts*0.36,0,7); ctx.fill(); ctx.fillStyle="#3f7a33"; ctx.beginPath(); ctx.arc(px+ts/2,py+ts/2,ts*0.22,0,7); ctx.fill(); }
     if(t==="E"){ ctx.fillStyle="#ffd75e"; ctx.font=`bold ${Math.floor(ts*0.6)}px serif`; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("⬆", px+ts/2, py+ts/2+1); }
-    if(t==="D"){ ctx.fillStyle="#54380f"; ctx.fillRect(px+ts*0.3,py+ts*0.1,ts*0.4,ts*0.8); }
+    if(t==="D"){ ctx.fillStyle="#a87f3f"; ctx.fillRect(px+ts*0.22,py+ts*0.06,ts*0.56,ts*0.88); ctx.fillStyle="#5d3f14"; ctx.fillRect(px+ts*0.3,py+ts*0.14,ts*0.4,ts*0.72); ctx.fillStyle="#ffd75e"; ctx.beginPath(); ctx.arc(px+ts*0.62,py+ts*0.52,Math.max(2,ts*0.07),0,7); ctx.fill(); }
+  }
+  // exits: mark EVERY exit tile from the map data. Several exits sit on plain
+  // floor tiles (the mill cellar stairs, the chapel doors) and were invisible
+  // before, which made the cellar effectively unfindable.
+  for(const e of (curMap.exits||[])){
+    const px=ox+e.x*ts, py=oy+e.y*ts;
+    ctx.fillStyle="rgba(255,215,94,0.30)"; ctx.fillRect(px,py,ts,ts);
+    ctx.fillStyle="#ffd75e"; ctx.font=`bold ${Math.floor(ts*0.6)}px serif`; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("⬆", px+ts/2, py+ts/2+1);
   }
   // chests
   for(const ch of (curMap.chests||[])){
@@ -463,8 +480,9 @@ function tryMove(dx,dy){
   // NPC blocks
   if(mapNPCs().some(n=>n.x===nx&&n.y===ny)) return;
   if(!passable(curMap,nx,ny)) return;
-  // party collision
-  if(G.party.some(c=>c!==h&&!c.dead&&c.x===nx&&c.y===ny)) return;
+  // Companions do NOT block: the follow-trail below steps them aside into the
+  // tile you just left. (Blocking here softlocked the temple: Lyra spawned on
+  // the only door tile and the hero could never leave.)
   const trail = G.party.filter(c=>!c.dead).map(c=>({c,x:c.x,y:c.y}));
   h.x = nx; h.y = ny;
   for(let i=1;i<trail.length;i++){ trail[i].c.x = trail[i-1].x; trail[i].c.y = trail[i-1].y; }
@@ -553,7 +571,7 @@ function checkCond(cond){
   if(cond.startsWith("hasitem:")) return hasItem(cond.slice(8));
   return true;
 }
-function closeDialogue(){ dlgOpen=false; dlgNode=null; dlgNpc=null; $("dialogue-box").style.display="none"; refreshAll(); saveGame(); }
+function closeDialogue(){ dlgOpen=false; dlgNode=null; dlgNpc=null; $("dialogue-box").style.display="none"; if(document.activeElement&&document.activeElement.blur) document.activeElement.blur(); refreshAll(); saveGame(); }
 function chooseDlgOption(o){
   if(o.check){
     const h = hero();
@@ -578,6 +596,7 @@ function applyEffects(doStr){
     if(kind==="quest"){ startQuest(a, parseInt(b||"0",10)); if(parseInt(b||"0",10)>0) setQuestStage(a, parseInt(b,10)); }
     if(kind==="complete"){ completeQuest(a); }
     if(kind==="join"){ joinCompanion(a); }
+    if(kind==="leave"){ leaveCompanion(a); }
     if(kind==="gold"){ G.gold += parseInt(a,10); log(`+${a} gold.`,"good"); }
     if(kind==="give"){ addItem(a); log(`Received <b>${esc(itemName(a))}</b>.`,"good"); }
     if(kind==="flag"){ G.flags[a]=true; }
@@ -603,10 +622,44 @@ function joinCompanion(id){
   if(def.armor){ addItemSilent(def.armor); c.equip.armor = def.armor; consumeFromInventory(def.armor); }
   if(def.shield){ addItemSilent("shield"); c.equip.shield = true; consumeFromInventory("shield"); }
   c.hp = maxHp(c);
-  const h = hero(); c.x = h.x; c.y = h.y+1;
+  c.companionId = id;
+  // Spawn on the NPC's own tile when she's on this map (a known-good spot she
+  // was already standing on); otherwise the nearest free, passable, non-exit
+  // tile to the hero. NEVER blindly at hero.y+1 — in the temple that is the
+  // only door tile, which softlocked the game.
+  const h = hero();
+  const npc = (curMap.npcs||[]).find(n=>n.id===id);
+  let sx = npc? npc.x : h.x, sy = npc? npc.y : h.y;
+  const tileFree = (x,y)=> passable(curMap,x,y) && !(x===h.x&&y===h.y)
+    && !(curMap.exits||[]).some(e=>e.x===x&&e.y===y)
+    && !mapNPCs().some(n=>n.id!==id && n.x===x&&n.y===y) // her own NPC token vacates its tile as she joins
+    && !G.party.some(p=>!p.dead&&p.x===x&&p.y===y);
+  if(!npc || !tileFree(sx,sy)){
+    let found = null;
+    for(let r=1;r<=4 && !found;r++) for(let yy=h.y-r;yy<=h.y+r && !found;yy++) for(let xx=h.x-r;xx<=h.x+r;xx++)
+      if(Math.max(Math.abs(xx-h.x),Math.abs(yy-h.y))===r && tileFree(xx,yy)){ found=[xx,yy]; break; }
+    if(found){ sx = found[0]; sy = found[1]; } else { sx = h.x; sy = h.y; }
+  }
+  c.x = sx; c.y = sy;
   G.party.push(c); G.companions[id] = true;
   log(`<b>${def.name}</b> joined the party! (${CLASSES[def.classId].name}, level ${c.level})`,"good");
   toast(`${def.name} joined the party!`);
+}
+function leaveCompanion(id){
+  const def = COMPANIONS[id]; if(!def) return;
+  const idx = G.party.findIndex(c=>!c.isHero && (c.companionId===id || (!c.companionId && c.name===def.name)));
+  if(idx<0){ G.companions[id] = false; return; }
+  const [c] = G.party.splice(idx,1);
+  G.companions[id] = false;
+  log(`<b>${def.name}</b> leaves the party and returns to ${id==="lyra"? "the Temple of the Dawn" : "the Whispering Wood"}. (Talk to ${def.name} there to recruit again.)`,"sys");
+  toast(`${def.name} left the party`);
+  refreshAll(); saveGame();
+}
+function dismissCompanion(uid){
+  const c = G.party.find(x=>x.uid===uid); if(!c) return;
+  const id = c.companionId || Object.keys(COMPANIONS).find(k=>COMPANIONS[k].name===c.name);
+  closeModal();
+  if(id) leaveCompanion(id);
 }
 function addItemSilent(id){ addItem(id,1); }
 function consumeFromInventory(id){ removeItem(id,1); }
@@ -628,7 +681,7 @@ function grantLevelFeatures(c){
 // ---------- Shops ----------
 let modalOpen = false;
 function openModal(html){ modalOpen = true; $("modal-content").innerHTML = html; $("modal").style.display="flex"; }
-function closeModal(){ modalOpen = false; $("modal").style.display="none"; refreshAll(); saveGame(); }
+function closeModal(){ modalOpen = false; $("modal").style.display="none"; if(document.activeElement&&document.activeElement.blur) document.activeElement.blur(); refreshAll(); saveGame(); }
 function openShop(shopId){
   const shop = SHOPS[shopId];
   let html = `<h2>${esc(shop.name)}</h2><p>Your gold: <b>${G.gold} gp</b>. You sell at half price.</p><div class="shop-cols"><div><h3>Buy</h3>`;
@@ -639,8 +692,8 @@ function openShop(shopId){
   html += `</div><div><h3>Sell (your bag)</h3>`;
   if(!G.inventory.length) html += `<p class="dim">Nothing to sell.</p>`;
   for(const s of G.inventory){
-    const val = Math.max(1, Math.floor(itemCost(s.id)/2));
-    html += `<div class="shop-row"><span>${esc(itemName(s.id))} ×${s.qty}</span><button onclick="sellItem('${s.id}',${val})">${val} gp</button></div>`;
+    const val = Math.floor(itemCost(s.id)*50)/100; // half price, rounded DOWN to the copper — never a minimum (a 1 cp torch used to sell for 1 gp: 100× arbitrage)
+    html += `<div class="shop-row"><span>${esc(itemName(s.id))} ×${s.qty}</span>${val>0?`<button onclick="sellItem('${s.id}',${val})">${val} gp</button>`:`<span class="dim">worthless</span>`}</div>`;
   }
   html += `</div></div><button class="big-btn" onclick="closeModal()">Leave shop</button>`;
   openModal(html);
@@ -661,6 +714,14 @@ openShop = function(id){ currentShopId = id; _openShop(id); };
 function shortRest(){
   if(COMBAT) return;
   G.clock = (G.clock||8) + 1;
+  for(const c of G.party) shortRestResources(c);
+  log("The party takes a Short Rest.","sys");
+  renderShortRest();
+}
+// Rebuilds ONLY the Short Rest modal. The spend/recover buttons call this —
+// calling shortRest() again would double-apply the resource refresh, advance
+// the clock again, and print the rest line twice.
+function renderShortRest(){
   let html = `<h2>Short Rest (1 hour)</h2><p>Spend Hit Dice to recover HP (die + Con modifier each). Warlocks regain Pact slots; several class resources refresh.</p>`;
   for(const c of G.party){
     if(c.classId==="wizard" && !c.arcaneRecoveryUsed) html += `<div class="shop-row"><span><b>${esc(c.name)}</b> — Arcane Recovery: regain spell slots totalling up to ${Math.ceil(c.level/2)} levels (once per Long Rest).</span><button onclick="arcaneRecovery('${c.uid}')">Recover slots</button></div>`;
@@ -675,8 +736,6 @@ function shortRest(){
   }
   html += `<button class="big-btn" onclick="closeModal()">Finish rest</button>`;
   openModal(html);
-  for(const c of G.party) shortRestResources(c);
-  log("The party takes a Short Rest.","sys");
 }
 function spendHitDie(uid, all){
   const c = G.party.find(x=>x.uid===uid); if(!c) return;
@@ -689,7 +748,7 @@ function spendHitDie(uid, all){
     c.hp = Math.min(maxHp(c), c.hp + Math.max(1,heal));
     if(c.downed && c.hp>0){ c.downed=false; c.deathSaves={s:0,f:0}; }
   }while(all);
-  shortRest();
+  renderShortRest();
   refreshPanels();
 }
 // Recover spent slots, lowest first, up to a total slot-level budget (Arcane / Natural Recovery).
@@ -705,23 +764,23 @@ function arcaneRecovery(uid){
   const got = recoverSlots(c, Math.ceil(c.level/2));
   c.arcaneRecoveryUsed = true;
   log(`Arcane Recovery: ${c.name} regains ${got.length? got.map(l=>"a level-"+l+" slot").join(", ") : "no slots (none spent)"}.`,"good");
-  shortRest(); refreshPanels();
+  renderShortRest(); refreshPanels();
 }
 function naturalRecovery(uid){
   const c = G.party.find(x=>x.uid===uid); if(!c||c.naturalRecoveryUsed) return;
   const got = recoverSlots(c, Math.ceil(c.level/2));
   c.naturalRecoveryUsed = true;
   log(`Natural Recovery: ${c.name} regains ${got.length? got.map(l=>"a level-"+l+" slot").join(", ") : "no slots (none spent)"}.`,"good");
-  shortRest(); refreshPanels();
+  renderShortRest(); refreshPanels();
 }
 function wildResurgence(uid, dir){
   const c = G.party.find(x=>x.uid===uid); if(!c) return;
   if(dir==="slot"){ // expend a slot -> +1 Wild Shape use (once per turn; here once per rest action)
-    for(let l=1;l<=4;l++){ if(slotsLeft(c,l)>0){ useSlot(c,l); c.res.wildShape = (c.res.wildShape||0)+1; log(`Wild Resurgence: ${c.name} trades a level-${l} slot for a Wild Shape use.`,"good"); shortRest(); refreshPanels(); return; } }
+    for(let l=1;l<=4;l++){ if(slotsLeft(c,l)>0){ useSlot(c,l); c.res.wildShape = (c.res.wildShape||0)+1; log(`Wild Resurgence: ${c.name} trades a level-${l} slot for a Wild Shape use.`,"good"); renderShortRest(); refreshPanels(); return; } }
     log("No spell slots to trade.","bad");
   } else {
     if(c.res.shapeToSlotUsed){ log("Already traded a Wild Shape use for a slot since the last Long Rest.","bad"); return; }
-    if((c.res.wildShape||0)>0 && (c.slotsUsed[1]||0)>0){ c.res.wildShape--; c.slotsUsed[1]--; c.res.shapeToSlotUsed = true; log(`Wild Resurgence: ${c.name} trades a Wild Shape use for a 1st-level slot.`,"good"); shortRest(); refreshPanels(); }
+    if((c.res.wildShape||0)>0 && (c.slotsUsed[1]||0)>0){ c.res.wildShape--; c.slotsUsed[1]--; c.res.shapeToSlotUsed = true; log(`Wild Resurgence: ${c.name} trades a Wild Shape use for a 1st-level slot.`,"good"); renderShortRest(); refreshPanels(); }
     else log("Needs a Wild Shape use and a spent 1st-level slot.","bad");
   }
 }
@@ -850,16 +909,17 @@ function bfs(map, sx, sy, maxTiles, ignoreUid, side){
   return dist;
 }
 // Line of sight: walls (#) block completely; trees (T) grant cover instead of blocking.
-function hasLoS(a, b){
-  const steps = Math.max(Math.abs(b.x-a.x), Math.abs(b.y-a.y)) * 2;
+function losBetween(x1, y1, x2, y2){
+  const steps = Math.max(Math.abs(x2-x1), Math.abs(y2-y1)) * 2;
   if(steps===0) return true;
   for(let i=1;i<steps;i++){
-    const x = Math.round(a.x + (b.x-a.x)*i/steps), y = Math.round(a.y + (b.y-a.y)*i/steps);
-    if(x===a.x&&y===a.y) continue; if(x===b.x&&y===b.y) continue;
+    const x = Math.round(x1 + (x2-x1)*i/steps), y = Math.round(y1 + (y2-y1)*i/steps);
+    if(x===x1&&y===y1) continue; if(x===x2&&y===y2) continue;
     if(tileAt(curMap,x,y)==="#") return false;
   }
   return true;
 }
+function hasLoS(a, b){ return losBetween(a.x, a.y, b.x, b.y); }
 // Half cover (+2 AC / Dex saves) if a tree or wall edge sits between attacker and target, near the target.
 function coverBonus(att, def){
   if(!att || !def || att===def) return 0;
@@ -1207,7 +1267,7 @@ function performAttack(att, def, weaponOverride, opts={}){
     const add = rollDie(att.inspiredDie); r.total += add; log(`${esc(att.name)} uses Bardic Inspiration (+${add}) → ${r.total}.`,"good"); att.inspiredDie = 0;
   }
   if(!att.isMonster && att.inspiration && !r.crit && r.total < defAC){
-    att.inspiration = false; const r2 = d20Test({bonus: atkTotalBonus, adv, critRange}); log(`${esc(att.name)} — Heroic Inspiration reroll: ${r2.total}.`,"good"); r = r2;
+    att.inspiration = false; const r2 = d20Test({bonus: atkTotalBonus, adv, critRange}); log(`${esc(att.name)} — Heroic Inspiration reroll: ${r2.total} (was ${r.total}).`,"good"); r = r2;
   }
   const hit = r.crit || (!r.fumble && r.total >= defAC);
   const rollTxt = r.rolls.length>1? `[${r.rolls.join(",")}]→${r.kept}` : `${r.kept}`;
@@ -1253,7 +1313,7 @@ function performAttack(att, def, weaponOverride, opts={}){
     if(att.classId==="ranger" && att.subclass && !st.colossusUsed && def.hp < def.maxHp){ const ex = rollDice(dmgCrit?2:1,8); dmg += ex.tot; parts.push(`Colossus Slayer ${ex.tot}`); st.colossusUsed = true; }
     // Frenzy (Berserker) — its dice double on a crit like every other damage die
     if(att.classId==="barbarian" && att.subclass && att.raging && !st.frenzyUsed){ const ex = rollDice(dmgCrit?4:2,6); dmg += ex.tot; parts.push(`Frenzy ${ex.tot}`); st.frenzyUsed = true; }
-    if(hasFeat(att,"savage_attacker") && !st.savageUsed){ const alt = rollDice(dmgCrit?dn*2:dn, dd).tot + (dd===0?1:dmgMod); if(alt>rolls.tot+dmgMod){ dmg += (alt-(rolls.tot+dmgMod)); parts.push(`Savage Attacker reroll`);} st.savageUsed = true; }
+    if(hasFeat(att,"savage_attacker") && !st.savageUsed){ const alt = rollDice(dmgCrit?dn*2:dn, dd).tot + (dd===0?1:dmgMod); if(alt>rolls.tot+dmgMod){ dmg += (alt-(rolls.tot+dmgMod)); parts.push(`Savage Attacker reroll → ${alt}`);} st.savageUsed = true; }
   }
   dmg = Math.max(0,dmg);
   // Defender reactions that reduce damage: Deflect Attacks (Monk L3), Uncanny Dodge (Rogue L5)
@@ -1556,7 +1616,7 @@ function castSpell(caster, spellId, slotLvl, target, point){
     if(caster._carefulActive && !caster.isMonster && t.isMonster===caster.isMonster) sv.success = true; // Careful Spell
     // Bardic Inspiration / Heroic Inspiration can rescue a failed save (any D20 Test)
     if(!sv.success && !t.isMonster && t.inspiredDie){ const add = rollDie(t.inspiredDie); sv.total += add; sv.success = sv.total>=spellSaveDC(caster); t.inspiredDie = 0; log(`${esc(t.name)} uses Bardic Inspiration (+${add}) on the save → ${sv.total}.`,"good"); }
-    if(!sv.success && !t.isMonster && t.inspiration){ t.inspiration = false; const sv2 = d20Test({bonus: sBonus, adv: sAdv, dc: spellSaveDC(caster)}); if(!(saveAb==="str"||saveAb==="dex") || !(hasCond(t,"Paralyzed")||hasCond(t,"Stunned"))) sv = sv2; log(`${esc(t.name)} — Heroic Inspiration reroll on the save: ${sv.total}.`,"good"); }
+    if(!sv.success && !t.isMonster && t.inspiration){ t.inspiration = false; const before = sv.total; const sv2 = d20Test({bonus: sBonus, adv: sAdv, dc: spellSaveDC(caster)}); if(!(saveAb==="str"||saveAb==="dex") || !(hasCond(t,"Paralyzed")||hasCond(t,"Stunned"))) sv = sv2; log(`${esc(t.name)} — Heroic Inspiration reroll on the save: ${sv.total} (was ${before}).`,"good"); }
     let dmg = empoweredRoll(diceArr[0], diceArr[1]).tot;
     if(sp.dmg2) dmg += rollDice(sp.dmg2[0], sp.dmg2[1]).tot;
     let taken = dmg;
@@ -1580,7 +1640,7 @@ function castSpell(caster, spellId, slotLvl, target, point){
     const ac = (t.isMonster? t.ac + (t.shieldActive?5:0) : armorClass(t)) + coverBonus(caster, t);
     let hitNow = r.crit || (!r.fumble && r.total>=ac);
     if(!hitNow && caster._metaActive && caster._metaActive.id==="seeking"){ const r2 = d20Test({bonus: atkBonus, adv}); log(`Seeking Spell: the attack rerolls (${r2.total}).`,"sys"); r = r2; hitNow = r.crit || (!r.fumble && r.total>=ac); }
-    if(!hitNow && !caster.isMonster && caster.inspiration){ caster.inspiration = false; const r2 = d20Test({bonus: atkBonus, adv}); log(`${esc(caster.name)} — Heroic Inspiration reroll on the spell attack: ${r2.total}.`,"good"); r = r2; hitNow = r.crit || (!r.fumble && r.total>=ac); }
+    if(!hitNow && !caster.isMonster && caster.inspiration){ caster.inspiration = false; const r2 = d20Test({bonus: atkBonus, adv}); log(`${esc(caster.name)} — Heroic Inspiration reroll on the spell attack: ${r2.total} (was ${r.total}).`,"good"); r = r2; hitNow = r.crit || (!r.fumble && r.total>=ac); }
     if(hitNow){
       if(!r.crit && canCastShield(t)){ castShieldReaction(t); if(r.total < ac+5){ log(`${esc(t.name)}'s Shield turns the spell aside!`,"good"); return; } }
       const dmgCrit = r.crit || ((hasCond(t,"Paralyzed")||hasCond(t,"Unconscious")||t.downed) && distFt(caster,t)<=5);
@@ -2020,11 +2080,18 @@ async function enemyTurn(m){
   const rangedAtk = m.atk.find(a2=>a2.ranged);
   let atkDef = (distFt(m,target)<=5 || !rangedAtk)? meleeAtk : rangedAtk;
   const reach = atkDef.ranged? (atkDef.range||60) : 5;
-  if(distFt(m,target) > reach){
-    // move toward target: pick reachable tile minimising distance to target
+  if(distFt(m,target) > reach || (atkDef.ranged && !hasLoS(m,target))){
+    // Move: a ranged attacker repositions for a CLEAR SHOT, not just closeness
+    // (goblins behind the mill wall used to stand there shooting the wall).
     const reachTiles = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
     let best=null, bd=1e9;
-    for(const k of reachTiles.keys()){ const [x,y]=k.split(",").map(Number); const d = Math.max(Math.abs(target.x-x),Math.abs(target.y-y)); if(d<bd){bd=d;best=[x,y];} }
+    for(const k of reachTiles.keys()){
+      const [x,y]=k.split(",").map(Number);
+      const d = Math.max(Math.abs(target.x-x),Math.abs(target.y-y));
+      let score = d;
+      if(atkDef.ranged){ const clear = losBetween(x,y,target.x,target.y) && d*5 <= (atkDef.range||60); score = clear? d : 1000 + d; }
+      if(score<bd){bd=score;best=[x,y];}
+    }
     if(best && (best[0]!==m.x||best[1]!==m.y)) moveActorTo(m, best[0], best[1]);
     await sleep(200);
     atkDef = (distFt(m,target)<=5 || !rangedAtk)? meleeAtk : rangedAtk;
@@ -2271,7 +2338,7 @@ function openCharacter(){
   html += `<p>AC <b>${armorClass(c)}</b> · Initiative <b>${fmtMod(initiativeBonus(c))}</b> · Speed <b>${speedOf(c)} ft</b> · Passive Perception <b>${passivePerception(c)}</b> · Proficiency Bonus <b>+${pb(c)}</b>${cls.spellcasting?` · Spell DC <b>${spellDC(c)}</b> · Spell attack <b>${fmtMod(spellAtkBonus(c))}</b>`:""}</p>`;
   html += `<h3>Skills</h3><div class="skillgrid">` + Object.keys(SKILLS).map(s=>`<div>${c.skillProf.includes(s)?"●":"○"} ${s} <b>${fmtMod(skillBonus(c,s))}</b> <span class="dim">(${SKILLS[s]})</span></div>`).join("") + `</div>`;
   html += `<h3>Features & Traits</h3><ul class="featlist">`;
-  for(let l=1;l<=Math.min(c.level,8);l++) for(const f of (cls.features[l]||[])) html += `<li><b>L${l} ${esc(f.split(":")[0])}</b>${cls.featureText[f]?` — ${esc(cls.featureText[f])}`: f.includes(":")? ` — ${esc(f.split(":").slice(1).join(":"))}`:""}</li>`;
+  for(let l=1;l<=Math.min(c.level,8);l++) for(const f of (cls.features[l]||[])){ if(f.startsWith("Subclass:")) continue; html += `<li><b>L${l} ${esc(f.split(":")[0])}</b>${cls.featureText[f]?` — ${esc(cls.featureText[f])}`: f.includes(":")? ` — ${esc(f.split(":").slice(1).join(":"))}`:""}</li>`; }
   if(c.subclass) html += `<li><b>Subclass: ${esc(cls.subclass.name)}</b> — ${esc(Object.values(cls.subclass.features).join(" "))}</li>`;
   for(const t of sp.traits) html += `<li>${esc(t)}</li>`;
   html += `<li>Background feat: ${esc(bg.feat)}</li>`;
@@ -2280,6 +2347,7 @@ function openCharacter(){
   if(hasFeat(c,"skilled") && (c.skilledPicks||0)<3){
     html += `<h3>Skilled feat — choose a skill (${(c.skilledPicks||0)}/3)</h3><select id="skilled-sel">${Object.keys(SKILLS).filter(s=>!c.skillProf.includes(s)).map(s=>`<option>${s}</option>`).join("")}</select> <button onclick="pickSkilled()">Add proficiency</button>`;
   }
+  if(!c.isHero && (c.companionId || Object.values(COMPANIONS).some(d=>d.name===c.name))) html += `<button onclick="dismissCompanion('${c.uid}')">Ask ${esc(c.name.split(" ")[0])} to leave the party (they'll wait at home — recruit them again there)</button> `;
   html += `<button class="big-btn" onclick="closeModal()">Close</button>`;
   openModal(html);
 }
@@ -2444,7 +2512,7 @@ function openProgression(){
   if(c.level<8 && c.xp>=XP_TABLE[c.level]) html += `<button class="big-btn glow" onclick="openLevelUp(G.party.find(x=>x.uid==='${c.uid}'))">⬆ LEVEL UP to ${c.level+1}!</button>`;
   html += `<div class="tree">`;
   for(let l=1;l<=8;l++){
-    const feats = cls.features[l]||[];
+    const feats = (cls.features[l]||[]).filter(f=>!f.startsWith("Subclass:") && f!=="Ability Score Improvement"); // both are appended separately below — listing them twice duplicated the text
     const unlocked = l<=c.level;
     html += `<div class="tnode ${unlocked?"unlocked":"locked"}"><div class="tlvl">Level ${l}</div><div>${feats.length? feats.map(f=>esc(f)).join(" · ") : "<span class='dim'>—</span>"}${l===3?` · <b>Subclass: ${esc(cls.subclass.name)}</b>`:""}${asiLevelsFor(c.classId).includes(l)?" · <b>Ability Score Improvement / Feat</b>":""}</div></div>`;
     if(l<8) html += `<div class="tlink ${l<c.level?"unlocked":""}"></div>`;
@@ -2642,7 +2710,7 @@ function buildAbilitySection(){
 function buildCreate(){
   const el = $("create-form");
   let html = `<div class="create-grid"><div>
-    <h3>1 · Class</h3><div class="cards">${Object.entries(CLASSES).map(([id,cl])=>`<button class="card ${createSel.classId===id?"on":""}" onclick="createPick('classId','${id}')"><b>${cl.name}</b><div class="dim">${esc(cl.desc)}</div><div class="dim">Hit Die d${cl.hitDie} · Saves ${cl.saves.map(s=>s.toUpperCase()).join("/")}</div></button>`).join("")}</div>
+    <h3>1 · Class</h3><div class="cards">${Object.entries(CLASSES).map(([id,cl])=>`<button class="card ${createSel.classId===id?"on":""}" onclick="createPick('classId','${id}')"><b>${cl.name}</b><div class="dim">${esc(cl.desc)}</div><div class="dim">Hit Die d${cl.hitDie} · Saves ${cl.saves.map(s=>s.toUpperCase()).join("/")}</div><div class="dim">Starts with: ${cl.startKit.map(id=>esc(itemName(id))).join(", ")}</div></button>`).join("")}</div>
     <h3>2 · Species</h3><div class="cards">${Object.entries(SPECIES).map(([id,sp])=>`<button class="card ${createSel.speciesId===id?"on":""}" onclick="createPick('speciesId','${id}')"><b>${sp.name}</b><div class="dim">${esc(sp.desc)}</div></button>`).join("")}</div>
     <h3>3 · Background</h3><div class="cards">${Object.entries(BACKGROUNDS).map(([id,bg])=>`<button class="card ${createSel.bgId===id?"on":""}" onclick="createPick('bgId','${id}')"><b>${bg.name}</b><div class="dim">${esc(bg.desc)}</div></button>`).join("")}</div>
     </div><div>
@@ -2762,10 +2830,13 @@ function continueGame(){
   $("game-screen").style.display="flex";
   const h = hero();
   enterMap(G.map||"emberford", h.x||15, h.y||10);
-  log("Welcome back to Aldermere.","sys");
+  log(`Welcome back — you are in ${curMap.name}.`,"sys"); // Aldermere is the realm; the town is Emberford
 }
 function initGame(){
   $("map-canvas").addEventListener("click", onCanvasClick);
+  // Buttons keep keyboard focus after a click, which made WASD/arrows feel
+  // dead after using menus until the map was clicked. Release it every time.
+  document.addEventListener("click", ev=>{ const b = ev.target.closest && ev.target.closest("button"); if(b) b.blur(); });
   if(loadGame()) $("continue-btn").style.display="inline-block";
 }
 document.addEventListener("DOMContentLoaded", initGame);
