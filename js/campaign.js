@@ -196,7 +196,7 @@ const MAPS = {
     encounters:[
       {id:"wood_wolves",x:25,y:4,r:3,quest:"SQ2",stage:1,monsters:[["wolf",26,2],["wolf",27,4],["wolf",25,5]],loot:{gold:0,items:[]}},
       {id:"wood_bandits1",x:14,y:12,r:4,quest:"MQ3",stage:1,monsters:[["bandit",13,11],["bandit",15,11],["bandit",14,13]],loot:{gold:30,items:["potion_healing"]}},
-      {id:"wood_bandits2",x:22,y:13,r:4,quest:"MQ3",stage:1,monsters:[["bandit",22,12],["bugbear",23,14],["bandit",21,14]],loot:{gold:35,items:[]}},
+      {id:"wood_bandits2",x:22,y:13,r:4,quest:"MQ3",stage:1,surprise:"party",monsters:[["bandit",22,12],["bugbear",23,14],["bandit",21,14]],loot:{gold:35,items:[]}},
       {id:"rusk_camp",x:6,y:13,r:4,quest:"MQ3",stage:2,monsters:[["captain_rusk",6,12],["bandit",4,13],["bandit",8,13]],loot:{gold:120,items:["crown_shard_jewel","rapier_1"]}},
     ],
     chests:[{x:28,y:15,loot:{gold:50,items:["shortbow_1"]}}]},
@@ -205,7 +205,7 @@ const MAPS = {
     npcs:[], start:{x:13,y:16},
     encounters:[
       {id:"mine_hobs1",x:12,y:12,r:4,quest:"MQ4",stage:1,monsters:[["hobgoblin",11,11],["hobgoblin",13,11],["hobgoblin",12,13]],loot:{gold:45,items:[]}},
-      {id:"mine_hobs2",x:3,y:5,r:4,quest:"SQ6",stage:1,monsters:[["hobgoblin",2,3],["hobgoblin",1,4]],loot:{gold:30,items:["potion_greater"]}},
+      {id:"mine_hobs2",x:3,y:5,r:4,quest:"SQ6",stage:1,surprise:"monsters",monsters:[["hobgoblin",2,3],["hobgoblin",1,4]],loot:{gold:30,items:["potion_greater"]}},
       {id:"mine_forge",x:21,y:4,r:5,quest:"MQ4",stage:2,monsters:[["forge_ogre",21,3],["hobgoblin",18,5],["hobgoblin",22,5]],loot:{gold:200,items:["crown_shard_thorns","greataxe_1","chain_mail_1"]}},
     ],
     chests:[{x:20,y:7,loot:{gold:70,items:["potion_superior"]}},{x:5,y:16,loot:{gold:40,items:[]}},{x:21,y:16,loot:{gold:55,items:["warhammer_1"]}}]},
