@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Hollow Crown — a D&D 2024 (5.5) 2D Campaign</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="toast"></div>
+
+<!-- TITLE -->
+<div id="title-screen">
+  <div class="title-inner">
+    <div class="crown">♛</div>
+    <h1>The Hollow Crown</h1>
+    <p class="tagline">A 2D campaign running the real <b>Dungeons &amp; Dragons 2024</b> rules (SRD 5.2.1).</p>
+    <p class="story">Forty years ago, King Corvin Alder fell in the War of the Ashen Field, and his crown — the
+    Hollow Crown, sworn to bind the loyalty of Aldermere's war-dead — was shattered and lost.
+    Now a pale shepherdess walks the fields at dusk, counting the graves. She means to gather the
+    Crown's three shards and raise the Ashen Host, so that no living child ever marches to war again.</p>
+    <p class="story">She has not counted on you.</p>
+    <button class="big-btn glow" onclick="startNewGame()">⚔️ New Campaign</button>
+    <button class="big-btn" id="continue-btn" style="display:none" onclick="continueGame()">Continue</button>
+    <p class="dim small">Six chapters · Levels 1–8 · Real dice, real rules: Weapon Mastery, death saves, concentration, the lot.<br>
+    Rules content from the SRD 5.2.1, CC-BY 4.0, Wizards of the Coast. Story, places and people are original. No blood or gore.</p>
+  </div>
+</div>
+
+<!-- CREATION -->
+<div id="create-screen" style="display:none">
+  <h1>Create Your Hero</h1>
+  <p class="dim">Class first, then Origin, then ability scores — the 2024 way.</p>
+  <div id="create-form"></div>
+</div>
+
+<!-- GAME -->
+<div id="game-screen" style="display:none">
+  <header id="topbar">
+    <span class="logo">♛ The Hollow Crown</span>
+    <nav>
+      <button onclick="openCharacter()">🧍 Character <span class="key">C</span></button>
+      <button onclick="openInventory()">🎒 Inventory <span class="key">I</span></button>
+      <button onclick="openSpellsMenu()">✨ Spells <span class="key">P</span></button>
+      <button onclick="openProgression()">🌳 Progression <span class="key">T</span></button>
+      <button onclick="openArmoury()">🛡️ Armoury</button>
+      <button onclick="openJournal()">📜 Journal <span class="key">J</span></button>
+      <button onclick="openCodex()">📖 Codex</button>
+    </nav>
+    <span id="gold-display">🪙 0 gp</span>
+    <button onclick="shortRest()">⛺ Short Rest <span class="key">R</span></button>
+    <button onclick="tryLongRest()">🛏️ Long Rest (inn)</button>
+    <button onclick="saveGame();toast('Saved')">💾 Save</button>
+  </header>
+  <main id="layout">
+    <aside id="left-panel">
+      <h3 class="panel-h">Party</h3>
+      <div id="party-panel"></div>
+    </aside>
+    <section id="center-panel">
+      <div id="map-name">Emberford</div>
+      <canvas id="map-canvas" width="960" height="600"></canvas>
+      <div id="combat-bar" style="display:none"><div id="combat-actions"></div></div>
+      <div id="dialogue-box" style="display:none">
+        <div id="dlg-name"></div>
+        <div id="dlg-text"></div>
+        <div id="dlg-options"></div>
+      </div>
+      <div id="log"></div>
+    </section>
+    <aside id="right-panel">
+      <div id="quest-panel"></div>
+      <div id="context-panel"></div>
+    </aside>
+  </main>
+</div>
+
+<!-- MODAL -->
+<div id="modal" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div id="modal-content"></div>
+</div>
+
+<!-- END -->
+<div id="end-screen" style="display:none">
+  <div class="title-inner">
+    <div class="crown">♛</div>
+    <h1>The End</h1>
+    <p id="end-text" class="story"></p>
+    <p id="end-stats" class="dim"></p>
+    <button class="big-btn glow" onclick="location.reload()">Play Again</button>
+  </div>
+</div>
+
+<script src="js/data.js"></script>
+<script src="js/campaign.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
