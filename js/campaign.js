@@ -167,7 +167,7 @@ const MAPS = {
     ],
     chests:[{x:16,y:2,loot:{gold:25,items:["potion_healing"]}}]},
   mill_cellar:{name:"Mill Cellar",tiles:MILL_CELLAR_TILES,
-    exits:[{x:8,y:9,to:"mill",tx:16,ty:3,label:"Up to the mill"}],
+    exits:[{x:7,y:9,to:"mill",tx:16,ty:3,label:"Up to the mill"}],
     npcs:[], start:{x:8,y:8},
     encounters:[
       {id:"cellar_chief",x:8,y:3,r:4,quest:"MQ1",stage:2,monsters:[["bugbear",8,2],["goblin",6,3],["goblin",10,3]],loot:{gold:40,items:["mill_key","potion_greater"]}},
