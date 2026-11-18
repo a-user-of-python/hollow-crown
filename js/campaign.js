@@ -408,8 +408,8 @@ Object.assign(DIALOGUES, {
   farmer_done:{text:"Cobb counts his sheep twice, grinning. \"All present! 30 gold and my thanks. Bold wolves, dead wolves — that's the order of things restored.\"",options:[{t:"Thanks, Cobb.",do:"complete:SQ4"}]},
   farmer_busy:{text:"\"South field, friend. Mind the scarred one.\"",options:[{t:"(Leave)"}]},
   widow_after:{text:"Widow Ansel is up and sweeping her step, hale as spring. \"Bless you, love. Emberford takes care of its own — and now you're one of its own.\"",options:[{t:"(Leave)"}]},
-  lyra_chat:{text:"Lyra adjusts her shield strap. \"The Dawn's light is just the world's way of saying the night didn't win. Ask me if you need the road explained — or if you need healing, that's literally my calling. (Companions recover fully on a Long Rest, like you.)\"",options:[{t:"(Leave)"}]},
-  fenn_chat:{text:"Fenn is juggling three apples. He drops all three. \"Right. Serious face. Rusk's camp is the far west of the wood, past my old patrols. Bring a light — and maybe don't mention my name until after the fighting.\"",options:[{t:"(Leave)"}]},
+  lyra_chat:{text:"Lyra adjusts her shield strap. \"The Dawn's light is just the world's way of saying the night didn't win. Ask me if you need the road explained — or if you need healing, that's literally my calling. (Companions recover fully on a Long Rest, like you.)\"",options:[{t:"Wait for me at the temple, Lyra. (Leave party)",do:"leave:lyra"},{t:"(Leave)"}]},
+  fenn_chat:{text:"Fenn is juggling three apples. He drops all three. \"Right. Serious face. Rusk's camp is the far west of the wood, past my old patrols. Bring a light — and maybe don't mention my name until after the fighting.\"",options:[{t:"Wait here in the wood, Fenn. (Leave party)",do:"leave:fenn"},{t:"(Leave)"}]},
   crown_choice:{text:"The Hollow Crown hangs in the cold air above Vespera's still form, whole at last: Band, Jewel, Thorns. It is patient. It has always been patient. Every dead soldier of Aldermere waits on your word.",options:[
     {t:"Destroy the Crown. Let the dead rest.",goto:"ending_destroy"},
     {t:"Take the Crown. Aldermere will never fall.",goto:"ending_claim"},
