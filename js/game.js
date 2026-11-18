@@ -439,8 +439,11 @@ function drawMap(){
   // before, which made the cellar effectively unfindable.
   for(const e of (curMap.exits||[])){
     const px=ox+e.x*ts, py=oy+e.y*ts;
-    ctx.fillStyle="rgba(255,215,94,0.30)"; ctx.fillRect(px,py,ts,ts);
-    ctx.fillStyle="#ffd75e"; ctx.font=`bold ${Math.floor(ts*0.6)}px serif`; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("⬆", px+ts/2, py+ts/2+1);
+    // A quest-gated exit is drawn grey with a lock, not gold like a usable
+    // exit — the gold crypt marker read as "go here" while it was barred.
+    const barred = e.requires && questStage(e.requires)<0;
+    ctx.fillStyle= barred? "rgba(150,150,160,0.25)" : "rgba(255,215,94,0.30)"; ctx.fillRect(px,py,ts,ts);
+    ctx.fillStyle= barred? "#9aa0aa" : "#ffd75e"; ctx.font=`bold ${Math.floor(ts*0.6)}px serif`; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(barred? "🔒" : "⬆", px+ts/2, py+ts/2+1);
   }
   // chests
   for(const ch of (curMap.chests||[])){
@@ -493,9 +496,14 @@ function afterStep(){
   // exit?
   const ex = (curMap.exits||[]).find(e=>e.x===h.x&&e.y===h.y);
   if(ex){
-    if(ex.requires && questStage(ex.requires)<0){ log("That way is barred — for now. (Complete the current main quest.)","bad"); }
+    if(ex.requires && questStage(ex.requires)<0){
+      // Standing on a barred exit re-fires this on every step — say it once
+      // per visit to the tile, not once per footstep.
+      const key = curMap.id+":"+ex.x+","+ex.y;
+      if(G._barredKey !== key){ log("That way is barred — for now. (Complete the current main quest.)","bad"); G._barredKey = key; }
+    }
     else { log(`You travel: ${ex.label}.`,"sys"); enterMap(ex.to, ex.tx, ex.ty); return; }
-  }
+  } else G._barredKey = null;
   // encounter trigger
   for(const enc of (curMap.encounters||[])){
     if(G.encountersDone[curMap.id+":"+enc.id]) continue;
@@ -621,6 +629,7 @@ function joinCompanion(id){
   if(def.weapon) { addItemSilent(def.weapon); c.equip.weapon = def.weapon; consumeFromInventory(def.weapon); }
   if(def.armor){ addItemSilent(def.armor); c.equip.armor = def.armor; consumeFromInventory(def.armor); }
   if(def.shield){ addItemSilent("shield"); c.equip.shield = true; consumeFromInventory("shield"); }
+  defaultSpellsFor(c); // caster companions join with spells prepared, ready to use
   c.hp = maxHp(c);
   c.companionId = id;
   // Spawn on the NPC's own tile when she's on this map (a known-good spot she
@@ -909,25 +918,55 @@ function bfs(map, sx, sy, maxTiles, ignoreUid, side){
   return dist;
 }
 // Line of sight: walls (#) block completely; trees (T) grant cover instead of blocking.
+// Grid traversal (Amanatides & Woo): visit every tile the centre-to-centre segment
+// passes through. Passing exactly through a corner is blocked only when BOTH
+// orthogonal neighbours are walls — the same rule movement uses (no corner cutting).
+// (The old point-sampling version rounded samples into wall corners and reported
+// shots as blocked by creatures that merely stood near the line.)
+function losTiles(x1, y1, x2, y2){
+  const tiles = [];
+  if(x1===x2 && y1===y2) return tiles;
+  const dx = x2-x1, dy = y2-y1;
+  const stepX = Math.sign(dx), stepY = Math.sign(dy);
+  const tDeltaX = dx!==0? Math.abs(1/dx) : Infinity;
+  const tDeltaY = dy!==0? Math.abs(1/dy) : Infinity;
+  let tMaxX = dx!==0? 0.5*tDeltaX : Infinity;
+  let tMaxY = dy!==0? 0.5*tDeltaY : Infinity;
+  let x = x1, y = y1, guard = 0;
+  while((x!==x2 || y!==y2) && guard++ < 500){
+    let corner = false;
+    if(Math.abs(tMaxX - tMaxY) < 1e-9){ corner = true; x += stepX; y += stepY; tMaxX += tDeltaX; tMaxY += tDeltaY; }
+    else if(tMaxX < tMaxY){ x += stepX; tMaxX += tDeltaX; }
+    else { y += stepY; tMaxY += tDeltaY; }
+    tiles.push([x, y, corner]);
+    if(x===x2 && y===y2) break;
+  }
+  return tiles;
+}
 function losBetween(x1, y1, x2, y2){
-  const steps = Math.max(Math.abs(x2-x1), Math.abs(y2-y1)) * 2;
-  if(steps===0) return true;
-  for(let i=1;i<steps;i++){
-    const x = Math.round(x1 + (x2-x1)*i/steps), y = Math.round(y1 + (y2-y1)*i/steps);
-    if(x===x1&&y===y1) continue; if(x===x2&&y===y2) continue;
-    if(tileAt(curMap,x,y)==="#") return false;
+  const wall = (cx,cy)=> tileAt(curMap,cx,cy)==="#";
+  for(const [x, y, corner] of losTiles(x1, y1, x2, y2)){
+    if(wall(x,y)) return false;
+    if(corner){
+      // the segment slipped through this tile's corner: blocked only if both side walls close it
+      const px = x - Math.sign(x2-x1), py = y - Math.sign(y2-y1);
+      if(wall(px + Math.sign(x2-x1), py) && wall(px, py + Math.sign(y2-y1))) return false;
+    }
   }
   return true;
 }
 function hasLoS(a, b){ return losBetween(a.x, a.y, b.x, b.y); }
-// Half cover (+2 AC / Dex saves) if a tree or wall edge sits between attacker and target, near the target.
+// Half cover (+2 AC / Dex saves) if a tree or another creature sits on the line
+// between attacker and target. Creatures grant cover; they never block the shot.
 function coverBonus(att, def){
   if(!att || !def || att===def) return 0;
-  const dx = Math.sign(def.x-att.x), dy = Math.sign(def.y-att.y);
-  const cx = def.x-dx, cy = def.y-dy;
-  if(cx===att.x && cy===att.y) return 0; // adjacent: no cover
-  const t = tileAt(curMap,cx,cy);
-  return (t==="T"||t==="#")? 2:0;
+  if(Math.max(Math.abs(def.x-att.x), Math.abs(def.y-att.y))<=1) return 0; // adjacent: no cover
+  for(const [x, y] of losTiles(att.x, att.y, def.x, def.y)){
+    if(tileAt(curMap,x,y)==="T") return 2;
+    const occ = occupantAt(x,y);
+    if(occ && occ!==att && occ!==def) return 2;
+  }
+  return 0;
 }
 // Monster spell slots are per spell level (2025 stat blocks).
 function monsterPB(m){ const cr = String((m&&m.cr)||"1"); const num = cr==="1/8"?0.125: cr==="1/4"?0.25: cr==="1/2"?0.5: parseFloat(cr)||1; return num>=13?5: num>=9?4: num>=5?3:2; }
@@ -957,7 +996,11 @@ function startCombat(enc){
     const def = MONSTERS[mid];
     const m = { uid:"m"+enc.id+i, mid, isMonster:true, name:def.name, x, y, cr:def.cr,
       ac:def.ac, maxHp:def.hp, hp:def.hp, speed:def.speed, ab:def.ab, atk:def.atk, spells:def.spells,
-      slotsUsed:0, slotsUsedByLvl:{}, conditions:[], dead:false, downed:false, color:"#a33", token:def.name[0],
+      slotsUsed:0, slotsUsedByLvl:{}, conditions:[], dead:false, downed:false, color:"#a33",
+      // If the monster's initial matches a party member's token (a Bugbear
+      // chief vs a hero named Bryn — both "B"), use its second letter so the
+      // two are never confused at a glance.
+      token: (G.party.some(c=>c.token===def.name[0]) && def.name[1])? def.name[1].toUpperCase() : def.name[0],
       creatureType:def.creatureType||"humanoid", saveProf:def.saveProf||[], resistNonmagic:!!def.resistNonmagic,
       redirectAttack:!!def.redirectAttack, skills:def.skills||null,
       vuln:def.vuln||[], immune:def.immune||[], resist:def.resist||[], boss:!!def.boss };
@@ -1926,7 +1969,7 @@ function pickSpell(spellId, slotLvl){
     return;
   }
   COMBAT.mode = {type:"cast", spellId, slotLvl, distant: metaId==="distant", metaId};
-  log(`Casting ${sp.name}: click a ${sp.aoe? "tile (area centre)" : "target"}.`,"sys");
+  log(`Casting ${sp.name}: click a ${sp.aoe? "tile (area centre)" : "target"}. (Esc or right-click cancels.)`,"sys");
   renderCombatBar();
 }
 function showItemButtons(){
@@ -1935,7 +1978,7 @@ function showItemButtons(){
   if(!pots.length){ sub.innerHTML = `<span class="dim">No potions in the party bag.</span>`; return; }
   sub.innerHTML = pots.map(p=>`<button onclick="pickPotion('${p.id}')">${esc(ITEMS[p.id].name)} ×${p.qty} (Bonus Action: drink · Action: give to adjacent ally)</button>`).join(" ");
 }
-function pickPotion(id){ COMBAT.mode = {type:"potion", id}; log("Click yourself (Bonus Action) or an adjacent ally (Action) to use the potion.","sys"); }
+function pickPotion(id){ COMBAT.mode = {type:"potion", id}; log("Click yourself (Bonus Action) or an adjacent ally (Action) to use the potion. (Esc cancels.)","sys"); }
 function useActionSlot(a, st, what){
   // Returns true if an action (or the Haste action, for its limited menu) was spent.
   if(!st.actionUsed){ st.actionUsed = true; return true; }
@@ -1964,7 +2007,7 @@ function combatAction(kind){
     if(chk.success){ removeCondition(a,"Grappled"); st.moveLeft = speedOf(a); log(`${esc(a.name)} breaks free of the grapple (${chk.total} vs ${grap.dc||13})!`,"good"); }
     else log(`${esc(a.name)} struggles but stays grappled (${chk.total} vs ${grap.dc||13}).`,"bad");
   }
-  else if(kind==="grapple"||kind==="shove"||kind==="push"){ COMBAT.mode = {type:kind}; log(`Click a foe within 5 ft to ${kind==="push"?"push":kind}.`,"sys"); return; }
+  else if(kind==="grapple"||kind==="shove"||kind==="push"){ COMBAT.mode = {type:kind}; log(`Click a foe within 5 ft to ${kind==="push"?"push":kind}. (Esc cancels.)`,"sys"); return; }
   refreshAll(); renderCombatBar();
 }
 function doHide(a){
@@ -2052,19 +2095,22 @@ async function enemyTurn(m){
   if(m.conditions.some(x=>x.turned)){
     const away = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
     let best=null,bd=-1;
-    for(const k of away.keys()){ const [x,y]=k.split(",").map(Number); const d = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>bd){bd=d;best=[x,y];} }
+    for(const k of away.keys()){ const [x,y]=k.split(",").map(Number); if(occupied(x,y,m.uid)) continue; const d = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>bd){bd=d;best=[x,y];} }
     if(best) moveActorTo(m, best[0], best[1]);
     log(`${esc(m.name)} flees, turned.`,"sys");
     endTurnEffects(m); nextTurn(); return;
   }
-  // Goblin Nimble Escape: a badly hurt goblin Disengages and flees
+  // Goblin Nimble Escape is a BONUS ACTION (2025 stat block): a badly hurt
+  // goblin Disengages and darts away, but it still gets its action — it used
+  // to end the goblin's whole turn here, so a cornered goblin stood silent
+  // forever once it could flee no farther.
   if(MONSTERS[m.mid].bonusAction==="disengage" && m.hp <= Math.floor(m.maxHp/3) && activeParty().length){
     st.disengaged = true;
     const away = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
     let best=null,bd=-1;
-    for(const k of away.keys()){ const [x,y]=k.split(",").map(Number); const d = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>bd){bd=d;best=[x,y];} }
-    if(best && (best[0]!==m.x||best[1]!==m.y)){ moveActorTo(m, best[0], best[1]); log(`${esc(m.name)} uses Nimble Escape — Disengage and dart away!`,"sys"); }
-    endTurnEffects(m); nextTurn(); return;
+    for(const k of away.keys()){ const [x,y]=k.split(",").map(Number); if(occupied(x,y,m.uid)) continue; const d = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>bd){bd=d;best=[x,y];} }
+    log(`${esc(m.name)} uses Nimble Escape — Disengage!`,"sys");
+    if(best && (best[0]!==m.x||best[1]!==m.y)) moveActorTo(m, best[0], best[1]);
   }
   // caster behaviour (per-level slots; cantrips are free)
   if(m.spells && activeParty().length){
@@ -2079,24 +2125,39 @@ async function enemyTurn(m){
   const meleeAtk = m.atk.find(a2=>!a2.ranged) || m.atk[0];
   const rangedAtk = m.atk.find(a2=>a2.ranged);
   let atkDef = (distFt(m,target)<=5 || !rangedAtk)? meleeAtk : rangedAtk;
-  const reach = atkDef.ranged? (atkDef.range||60) : 5;
-  if(distFt(m,target) > reach || (atkDef.ranged && !hasLoS(m,target))){
-    // Move: a ranged attacker repositions for a CLEAR SHOT, not just closeness
-    // (goblins behind the mill wall used to stand there shooting the wall).
+  const canHit = ()=> distFt(m,target) <= (atkDef.ranged? (atkDef.range||60) : 5) && (!atkDef.ranged || hasLoS(m,target));
+  // Move toward a firing position: a ranged attacker repositions for a CLEAR
+  // SHOT, not just closeness (goblins behind the mill wall used to stand there
+  // shooting the wall). Destination tiles must be UNOCCUPIED — the BFS map
+  // includes ally-occupied tiles as pass-through, and picking one made
+  // moveActorTo refuse silently, so the goblin idled its whole turn.
+  const moveToAttackPosition = ()=>{
     const reachTiles = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
     let best=null, bd=1e9;
     for(const k of reachTiles.keys()){
       const [x,y]=k.split(",").map(Number);
+      if(occupied(x,y,m.uid)) continue;
       const d = Math.max(Math.abs(target.x-x),Math.abs(target.y-y));
       let score = d;
       if(atkDef.ranged){ const clear = losBetween(x,y,target.x,target.y) && d*5 <= (atkDef.range||60); score = clear? d : 1000 + d; }
       if(score<bd){bd=score;best=[x,y];}
     }
     if(best && (best[0]!==m.x||best[1]!==m.y)) moveActorTo(m, best[0], best[1]);
-    await sleep(200);
     atkDef = (distFt(m,target)<=5 || !rangedAtk)? meleeAtk : rangedAtk;
+  };
+  if(!canHit()){
+    moveToAttackPosition();
+    await sleep(200);
   }
-  if(!m.dead && distFt(m,target) <= (atkDef.ranged? (atkDef.range||60) : 5)){
+  if(!m.dead && !canHit()){
+    // It moved (or tried to) and still can't attack: spend the action to Dash
+    // and close in, rather than standing idle in the open.
+    st.moveLeft += (m.speed||30);
+    log(`${esc(m.name)} dashes to close the distance.`,"sys");
+    moveToAttackPosition();
+    await sleep(200);
+  }
+  if(!m.dead && canHit()){
     performAttack(m, target, atkDef, {});
     await sleep(350);
   }
@@ -2303,7 +2364,9 @@ document.addEventListener("keydown", ev=>{
   if(modalOpen){ if(ev.key==="Escape") closeModal(); return; }
   if(dlgOpen) return;
   const k = ev.key.toLowerCase();
+  if(["arrowup","arrowdown","arrowleft","arrowright"].includes(k)) ev.preventDefault(); // arrows steer the hero; never scroll the page
   if(COMBAT){
+    if(ev.key==="Escape" && COMBAT.mode){ COMBAT.mode = null; COMBAT.metaPick = null; const a = currentActor(); if(a) a._meta = null; log("Targeting cancelled.","sys"); renderCombatBar(); return; }
     if(k==="e" && currentActor() && !currentActor().isMonster) playerEndTurn();
     return;
   }
@@ -2417,6 +2480,29 @@ function spellLimit(c){
   if(cls.known) return cls.known(c.level);
   if(cls.spellcasting) return Math.max(1, c.level + amod(c, cls.spellAbility));
   return 0;
+}
+// Companions arrive as finished characters: a caster companion joins with a
+// sensible spell list already prepared. (Lyra used to join with NO spells at
+// all, leaving the party without healing until the player happened to open
+// the Spells menu for her — in the playtest that contributed to a wipe.)
+const COMPANION_SPELL_PICKS = {
+  cleric:{cantrips:["sacred_flame","guidance","toll_the_dead","light"],
+    spells:["cure_wounds","healing_word","bless","guiding_bolt","aid","spiritual_weapon","lesser_restoration","hold_person","spirit_guardians","revivify"]},
+};
+function defaultSpellsFor(c){
+  if(!CLASSES[c.classId].spellcasting) return;
+  const picks = COMPANION_SPELL_PICKS[c.classId] || {cantrips:[], spells:[]};
+  const avail = Object.entries(SPELLS).filter(([,sp])=>sp.classes.includes(c.classId));
+  let maxLvl = 0;
+  if(CLASSES[c.classId].spellcasting==="pact"){ const p = PACT_SLOTS[c.level]; maxLvl = p? p.lvl : 0; }
+  else maxSlots(c).forEach((n,i)=>{ if(n>0) maxLvl = i+1; });
+  const order = (list, pref)=> list.sort((a,b)=>{
+    const pa = pref.indexOf(a[0]), pb = pref.indexOf(b[0]);
+    return (pa<0?99:pa) - (pb<0?99:pb) || a[1].lvl - b[1].lvl || a[1].name.localeCompare(b[1].name);
+  });
+  const cantrips = order(avail.filter(([,sp])=>sp.lvl===0), picks.cantrips).slice(0, cantripLimit(c)).map(([id])=>id);
+  const leveled = order(avail.filter(([,sp])=>sp.lvl>0 && sp.lvl<=maxLvl), picks.spells).slice(0, spellLimit(c)).map(([id])=>id);
+  c.spellsKnown = [...cantrips, ...leveled];
 }
 function openSpellsMenu(){
   const casters = G.party.filter(c=>CLASSES[c.classId].spellcasting);
@@ -2822,6 +2908,9 @@ function startNewGame(){
 function continueGame(){
   const g = loadGame(); if(!g) return;
   G = g;
+  // Backfill saves from before companions got default spells: a caster
+  // companion with an empty spell list gets her standard preparation.
+  for(const c of G.party){ if(!c.isHero && CLASSES[c.classId].spellcasting && !(c.spellsKnown||[]).length) defaultSpellsFor(c); }
   menuCharUid = G.heroUid;
   // restore log UI
   $("log").innerHTML = "";
@@ -2834,6 +2923,11 @@ function continueGame(){
 }
 function initGame(){
   $("map-canvas").addEventListener("click", onCanvasClick);
+  // Right-click cancels a pending combat targeting mode (Escape does too);
+  // a failed target click used to leave the game stuck in "click a target".
+  $("map-canvas").addEventListener("contextmenu", ev=>{
+    if(typeof COMBAT!=="undefined" && COMBAT && COMBAT.mode){ ev.preventDefault(); COMBAT.mode = null; COMBAT.metaPick = null; log("Targeting cancelled.","sys"); renderCombatBar(); }
+  });
   // Buttons keep keyboard focus after a click, which made WASD/arrows feel
   // dead after using menus until the map was clicked. Release it every time.
   document.addEventListener("click", ev=>{ const b = ev.target.closest && ev.target.closest("button"); if(b) b.blur(); });
