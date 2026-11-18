@@ -2042,6 +2042,88 @@ function endGame(choice){
 
 // ---------- Creation ----------
 let createSel = {classId:"fighter", speciesId:"human", bgId:"soldier"};
+// Ability-score generation: the three methods from the 2024 Player's Handbook.
+let createMethod = "standard"; // "standard" | "pointbuy" | "rolled"
+let createRolls = null; // rolled method: [{dice:[4 rolls], dropIdx, total}] x6
+let createAssign = {str:0, dex:1, con:2, int:3, wis:4, cha:5}; // ability -> roll index
+let createSelScores = {}; // remembered dropdown picks per method, across rebuilds
+const POINT_BUY_COST = {8:0, 9:1, 10:2, 11:3, 12:4, 13:5, 14:7, 15:9};
+const DIE_FACES = ["⚀","⚁","⚂","⚃","⚄","⚅"];
+function captureAbilitySel(){
+  if(!$("ab-str")) return;
+  if(createMethod==="rolled"){
+    for(const a of ABILITIES){ const s = $("ab-"+a); if(s) createAssign[a] = parseInt(s.value,10); }
+  } else {
+    const store = createSelScores[createMethod] = createSelScores[createMethod] || {};
+    for(const a of ABILITIES){ const s = $("ab-"+a); if(s) store[a] = parseInt(s.value,10); }
+  }
+}
+function setCreateMethod(m){ captureAbilitySel(); createMethod = m; buildAbilitySection(); }
+function genAbilityRolls(){
+  const out = [];
+  for(let i=0;i<6;i++){
+    const dice = rollDice(4,6).rolls;
+    let dropIdx = 0;
+    for(let j=1;j<4;j++) if(dice[j] < dice[dropIdx]) dropIdx = j;
+    out.push({dice, dropIdx, total: dice.reduce((s,v)=>s+v,0) - dice[dropIdx]});
+  }
+  return out;
+}
+function rollCardsHtml(rolls, fake){
+  return `<div class="roll-cards">${rolls.map((r,i)=>`<div class="roll-card ${fake?"":"pop"}"><div class="rlabel">Roll ${i+1}</div><div class="dice">${r.dice.map((d,j)=>`<span class="${j===r.dropIdx?"dropped":""}">${DIE_FACES[d-1]}</span>`).join(" ")}</div><div class="rtotal">${r.total}</div><div class="dim small">dropped the ${r.dice[r.dropIdx]}</div></div>`).join("")}</div>`;
+}
+function rollAbilityScores(){
+  buildAbilitySection(); // ensures the roll-cards container + button exist
+  const btn = $("roll-btn"); if(btn) btn.disabled = true;
+  let ticks = 0;
+  const iv = setInterval(()=>{
+    ticks++;
+    const area = $("roll-cards-wrap");
+    if(!area){ clearInterval(iv); return; }
+    area.innerHTML = rollCardsHtml(genAbilityRolls(), true);
+    if(ticks>=10){
+      clearInterval(iv);
+      createRolls = genAbilityRolls();
+      createAssign = {str:0, dex:1, con:2, int:3, wis:4, cha:5};
+      buildAbilitySection();
+    }
+  }, 70);
+}
+function updatePointBuyLeft(){
+  const el = $("pb-left"); if(!el) return;
+  let cost = 0;
+  for(const a of ABILITIES){ const s = $("ab-"+a); if(s) cost += POINT_BUY_COST[parseInt(s.value,10)] || 0; }
+  const left = 27 - cost;
+  el.textContent = left;
+  el.style.color = left < 0 ? "var(--bad)" : "var(--gold)";
+}
+function buildAbilitySection(){
+  const el = $("ability-section"); if(!el) return;
+  const stdDefault = {str:15, dex:14, con:13, int:12, wis:10, cha:8};
+  let html = `<div class="method-row">
+    <button class="${createMethod==="standard"?"on":""}" onclick="setCreateMethod('standard')">Standard Array</button>
+    <button class="${createMethod==="pointbuy"?"on":""}" onclick="setCreateMethod('pointbuy')">Point Buy (27)</button>
+    <button class="${createMethod==="rolled"?"on":""}" onclick="setCreateMethod('rolled')">🎲 Roll Dice (4d6)</button>
+  </div>`;
+  if(createMethod==="standard"){
+    const store = createSelScores.standard || {};
+    html += `<p class="dim">Assign each of 15, 14, 13, 12, 10, 8 to one ability.</p>` +
+      ABILITIES.map(a=>`<div class="shop-row"><span>${ABILITY_NAMES[a]}</span><select id="ab-${a}">${[15,14,13,12,10,8].map(v=>`<option value="${v}" ${(store[a]??stdDefault[a])===v?"selected":""}>${v}</option>`).join("")}</select></div>`).join("");
+  } else if(createMethod==="pointbuy"){
+    const store = createSelScores.pointbuy || {};
+    html += `<p class="dim">Buy scores with <b>27 points</b>: 8 costs 0 · 9→1 · 10→2 · 11→3 · 12→4 · 13→5 · 14→7 · 15→9. Points left: <b id="pb-left">27</b></p>` +
+      ABILITIES.map(a=>`<div class="shop-row"><span>${ABILITY_NAMES[a]}</span><select id="ab-${a}" onchange="updatePointBuyLeft()">${[8,9,10,11,12,13,14,15].map(v=>`<option value="${v}" ${(store[a]??stdDefault[a])===v?"selected":""}>${v} (${POINT_BUY_COST[v]} pts)</option>`).join("")}</select></div>`).join("");
+  } else {
+    html += `<p class="dim">The classic method: <b>roll four d6, drop the lowest die</b> — six times — then assign each result to the ability you want. Your background boost still applies on top.</p>
+    <div id="roll-cards-wrap">${createRolls ? rollCardsHtml(createRolls, false) : `<p class="dim">No rolls yet. Roll when you're ready — you can reroll the whole set until you start the campaign.</p>`}</div>
+    <button class="big-btn ${createRolls?"":"glow"}" id="roll-btn" onclick="rollAbilityScores()">🎲 ${createRolls?"Reroll Ability Scores":"Roll Ability Scores"}</button>`;
+    if(createRolls){
+      html += ABILITIES.map(a=>`<div class="shop-row"><span>${ABILITY_NAMES[a]}</span><select id="ab-${a}">${createRolls.map((r,i)=>`<option value="${i}" ${createAssign[a]===i?"selected":""}>Roll ${i+1} — ${r.total} (${r.dice.join(", ")})</option>`).join("")}</select></div>`).join("");
+    }
+  }
+  el.innerHTML = html;
+  if(createMethod==="pointbuy") updatePointBuyLeft();
+}
 function buildCreate(){
   const el = $("create-form");
   let html = `<div class="create-grid"><div>
@@ -2049,8 +2131,8 @@ function buildCreate(){
     <h3>2 · Species</h3><div class="cards">${Object.entries(SPECIES).map(([id,sp])=>`<button class="card ${createSel.speciesId===id?"on":""}" onclick="createPick('speciesId','${id}')"><b>${sp.name}</b><div class="dim">${esc(sp.desc)}</div></button>`).join("")}</div>
     <h3>3 · Background</h3><div class="cards">${Object.entries(BACKGROUNDS).map(([id,bg])=>`<button class="card ${createSel.bgId===id?"on":""}" onclick="createPick('bgId','${id}')"><b>${bg.name}</b><div class="dim">${esc(bg.desc)}</div></button>`).join("")}</div>
     </div><div>
-    <h3>4 · Ability Scores (Standard Array)</h3>
-    ${ABILITIES.map(a=>`<div class="shop-row"><span>${ABILITY_NAMES[a]}</span><select id="ab-${a}">${[15,14,13,12,10,8].map(v=>`<option ${v===({str:15,dex:14,con:13,int:12,wis:10,cha:8})[a]?"selected":""}>${v}</option>`).join("")}</select></div>`).join("")}
+    <h3>4 · Ability Scores</h3>
+    <div id="ability-section"></div>
     <p class="dim">Background boost: +2 to one and +1 to another of the background's abilities (${BACKGROUNDS[createSel.bgId].abilities.map(a=>ABILITY_NAMES[a]).join(", ")}), or +1 to all three.</p>
     <div class="shop-row"><span>+2 boost</span><select id="boost2">${BACKGROUNDS[createSel.bgId].abilities.map(a=>`<option value="${a}">${ABILITY_NAMES[a]}</option>`).join("")}</select></div>
     <div class="shop-row"><span>+1 boost</span><select id="boost1">${BACKGROUNDS[createSel.bgId].abilities.map(a=>`<option value="${a}">${ABILITY_NAMES[a]}</option>`).join("")}</select></div>
@@ -2065,6 +2147,7 @@ function buildCreate(){
     <button class="big-btn glow" onclick="finishCreate()">Begin the Campaign ➜</button>
     </div></div>`;
   el.innerHTML = html;
+  buildAbilitySection();
   buildSpellPicks();
 }
 function buildSpellPicks(){
@@ -2088,14 +2171,25 @@ function limitSkills(box, max){
   const checked = boxes.filter(b=>b.checked);
   boxes.forEach(b=>{ if(!b.checked) b.disabled = checked.length>=max; });
 }
-function createPick(k,v){ createSel[k]=v; buildCreate(); }
+function createPick(k,v){ captureAbilitySel(); createSel[k]=v; buildCreate(); }
 function finishCreate(){
   const err = $("create-err");
   const name = ($("hero-name").value||"").trim() || "Ash";
   const abilities = {};
-  const used = [];
-  for(const a of ABILITIES){ const v = parseInt($("ab-"+a).value,10); abilities[a]=v; used.push(v); }
-  if(new Set(used).size!==6){ err.textContent = "The Standard Array uses each of 15, 14, 13, 12, 10, 8 exactly once."; return; }
+  if(createMethod==="rolled"){
+    if(!createRolls){ err.textContent = "Roll the dice first — tap 🎲 Roll Ability Scores."; return; }
+    const idxs = [];
+    for(const a of ABILITIES){ const idx = parseInt($("ab-"+a).value,10); idxs.push(idx); abilities[a] = createRolls[idx].total; }
+    if(new Set(idxs).size!==6){ err.textContent = "Assign each rolled score to exactly one ability."; return; }
+  } else if(createMethod==="pointbuy"){
+    let cost = 0;
+    for(const a of ABILITIES){ const v = parseInt($("ab-"+a).value,10); abilities[a]=v; cost += POINT_BUY_COST[v]; }
+    if(cost>27){ err.textContent = `Point Buy: you've spent ${cost} of 27 points — lower a score or two.`; return; }
+  } else {
+    const used = [];
+    for(const a of ABILITIES){ const v = parseInt($("ab-"+a).value,10); abilities[a]=v; used.push(v); }
+    if(new Set(used).size!==6){ err.textContent = "The Standard Array uses each of 15, 14, 13, 12, 10, 8 exactly once."; return; }
+  }
   const bg = BACKGROUNDS[createSel.bgId];
   const b2 = $("boost2").value, b1 = $("boost1").value;
   if(b2===b1){ /* +1 to all three instead */ for(const a of bg.abilities) abilities[a]+=1; }
