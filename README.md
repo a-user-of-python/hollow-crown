@@ -26,6 +26,14 @@ built from the **SRD 5.2.1** (CC-BY 4.0, Wizards of the Coast LLC).
   a drowned chapel, a bandit wood, a hobgoblin mine, the siege of the Pale Harvest,
   and the Royal Crypts — with two companions, side quests, shops, dialogue skill
   checks, and a final choice with two endings.
+- **The Endless Realm — a completely open-world mode.** Pick it on the title screen
+  and the game generates an infinite world around you as you walk: plains, forests,
+  deserts, snowfields, highlands and lakeshores, with villages (shops, inns, safe
+  Long Rests, a home the Dawn returns you to), caves, dungeons, towers and ruins
+  with generated interiors, bandit camps, shrines, random ambushes whose danger
+  grows with distance from the start, discovery rewards, and an endless bounty
+  board. The world is deterministic — the same world seed always builds the
+  same world.
 - Saves automatically to your browser (localStorage). No blood or gore.
 
 ## Files
@@ -34,8 +42,9 @@ built from the **SRD 5.2.1** (CC-BY 4.0, Wizards of the Coast LLC).
 - `css/style.css` — styling
 - `js/data.js` — SRD 5.2.1 data: classes, species, backgrounds, weapons, armour, spells, monsters
 - `js/campaign.js` — the original campaign: maps, NPCs, dialogues, quests, shops
-- `js/game.js` — rules engine, exploration, combat, menus
+- `js/game.js` — rules engine, exploration, combat, menus, and the Endless Realm generator
 - `DESIGN.md` — the design brief the game was built from
+- `DESIGN-OPENWORLD.md` — the brief for the Endless Realm mode and the UI refresh
 
 ## Licensing
 
