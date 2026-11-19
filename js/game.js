@@ -238,6 +238,8 @@ function newGameState(hero){
     map:"emberford", quests:{}, flags:{}, codex:{}, chestsTaken:{}, encountersDone:{},
     log: [], startedAt: Date.now(), playMs: 0, kills:0, ending:null,
     companions:{}, guidanceFor:null, clock: 8, lastLongRest: -999, // world clock in hours; a Long Rest's benefits need 24h between them
+    mode: "campaign", // "campaign" | "open" (Endless Realm)
+    ow: null, // open-world state (seed, world position, discoveries, bounty) — see the Endless Realm section
   };
 }
 function hero(){ return G.party.find(c=>c.uid===G.heroUid); }
@@ -276,7 +278,7 @@ function clearSave(){ try{ localStorage.removeItem(SAVE_KEY); }catch(e){} }
 "use strict";
 let curMap = null; // MAPS entry + id
 const TILE = 30;
-const BLOCKED = new Set(["#","T","W"]);
+const BLOCKED = new Set(["#","T","W","o"]); // "o" = rock outcrop, used by the Endless Realm
 function tileAt(map,x,y){
   if(y<0||y>=map.tiles.length||x<0||x>=map.tiles[y].length) return "#";
   return map.tiles[y][x];
@@ -296,7 +298,12 @@ function enterMap(mapId, tx, ty){
   if(id==="emberford" && G.flags.siegeActive && !G.quests.MQ5?.done) id = "emberford_siege";
   if(G.map && G.map!==id) G.clock = (G.clock||8) + 1; // travel passes time
   G.map = id;
-  curMap = Object.assign({id}, MAPS[id]);
+  if(id==="ow_surface"){ // Endless Realm surface: a generated window around the hero's world position
+    curMap = buildOWSurface();
+    tx = OW_CX; ty = OW_CY;
+  }
+  else if(id.startsWith("ow_") && typeof owInteriorByKey==="function" && owInteriorByKey(id)) curMap = Object.assign({id}, owInteriorByKey(id)); // generated cave/dungeon/tower/ruins interior (deterministic per POI, survives save/load)
+  else curMap = Object.assign({id}, MAPS[id]);
   const h = hero();
   h.x = tx; h.y = ty;
   // companions trail behind: each goes on the nearest free passable tile to
@@ -311,6 +318,7 @@ function enterMap(mapId, tx, ty){
     if(!placed){ c.x = tx; c.y = ty; }
   }
   onEnterMap(id);
+  if(id==="ow_surface" && typeof owArriveSurface==="function") owArriveSurface();
   refreshAll(); saveGame();
 }
 function onEnterMap(id){
@@ -427,10 +435,16 @@ function drawMap(){
     else if(t==="E") col = "#8a6d1f";
     else if(t==="B") col = "#7a6242";
     else if(t==="P") col = "#5c5648";
+    else if(t==="%") col = "#c2a15c"; // sand (Endless Realm desert / shores)
+    else if(t==="S") col = "#dde7ee"; // snow (Endless Realm)
+    else if(t==="o") col = "#6f6a60"; // rock outcrop — blocks, like a wall
+    else if(t==="*") col = "#5d7a33"; // flower meadow — walkable decoration
     else col = curMap.outdoor? "#4d6330" : "#4a4453";
     ctx.fillStyle = col; ctx.fillRect(px,py,ts,ts);
     ctx.strokeStyle = "rgba(0,0,0,0.25)"; ctx.strokeRect(px+0.5,py+0.5,ts-1,ts-1);
     if(t==="T"){ ctx.fillStyle="#2e5d27"; ctx.beginPath(); ctx.arc(px+ts/2,py+ts/2,ts*0.36,0,7); ctx.fill(); ctx.fillStyle="#3f7a33"; ctx.beginPath(); ctx.arc(px+ts/2,py+ts/2,ts*0.22,0,7); ctx.fill(); }
+    if(t==="o"){ ctx.fillStyle="#8d877c"; ctx.beginPath(); ctx.moveTo(px+ts*0.5,py+ts*0.16); ctx.lineTo(px+ts*0.84,py+ts*0.82); ctx.lineTo(px+ts*0.16,py+ts*0.82); ctx.closePath(); ctx.fill(); ctx.fillStyle="#a9a397"; ctx.beginPath(); ctx.moveTo(px+ts*0.5,py+ts*0.16); ctx.lineTo(px+ts*0.66,py+ts*0.82); ctx.lineTo(px+ts*0.16,py+ts*0.82); ctx.closePath(); ctx.fill(); }
+    if(t==="*"){ ctx.fillStyle="#e88bb0"; ctx.beginPath(); ctx.arc(px+ts*0.34,py+ts*0.4,Math.max(2,ts*0.07),0,7); ctx.fill(); ctx.fillStyle="#ffd75e"; ctx.beginPath(); ctx.arc(px+ts*0.64,py+ts*0.62,Math.max(2,ts*0.07),0,7); ctx.fill(); ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(px+ts*0.55,py+ts*0.3,Math.max(2,ts*0.05),0,7); ctx.fill(); }
     if(t==="E"){ ctx.fillStyle="#ffd75e"; ctx.font=`bold ${Math.floor(ts*0.6)}px serif`; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText("⬆", px+ts/2, py+ts/2+1); }
     if(t==="D"){ ctx.fillStyle="#a87f3f"; ctx.fillRect(px+ts*0.22,py+ts*0.06,ts*0.56,ts*0.88); ctx.fillStyle="#5d3f14"; ctx.fillRect(px+ts*0.3,py+ts*0.14,ts*0.4,ts*0.72); ctx.fillStyle="#ffd75e"; ctx.beginPath(); ctx.arc(px+ts*0.62,py+ts*0.52,Math.max(2,ts*0.07),0,7); ctx.fill(); }
   }
@@ -479,6 +493,7 @@ function drawMap(){
 function tryMove(dx,dy){
   if(COMBAT || dlgOpen || modalOpen) return;
   const h = hero(); if(h.dead||h.downed) return;
+  if(curMap && curMap.id==="ow_surface"){ owTryMove(dx,dy); return; } // Endless Realm: the world scrolls, the hero stays centred
   const nx = h.x+dx, ny = h.y+dy;
   // NPC blocks
   if(mapNPCs().some(n=>n.x===nx&&n.y===ny)) return;
@@ -798,6 +813,10 @@ function tryLongRest(){
   if((G.clock||8) - (G.lastLongRest??-999) < 24){ log("You've already benefited from a Long Rest within the last 24 hours — a creature can do so only once per day. Adventure on (fights, travel and Short Rests pass the time), then rest again.","bad"); return; }
   if(curMap && (curMap.id==="emberford" || curMap.id==="emberford_siege")){
     longRest("You take rooms at the Drowned Flagon. Eight hours of real sleep — HP, Hit Dice, spell slots and class resources fully restored.");
+  } else if(G.mode==="open" && typeof owCanLongRest==="function" && owCanLongRest()){
+    longRest("You take a room at the village inn. Eight hours of real sleep — HP, Hit Dice, spell slots and class resources fully restored.");
+  } else if(G.mode==="open"){
+    log("It's not safe to take a Long Rest out in the wilds. Long Rests need a village in the Endless Realm — look for houses and a plaza on the surface. A Short Rest (R) works anywhere.","bad");
   } else {
     log("It's not safe to take a Long Rest here. Long Rests need the inn at Emberford (or another truly safe haven). A Short Rest (R) works anywhere.","bad");
   }
@@ -849,6 +868,7 @@ function refreshPanels(){
 }
 function refreshQuests(){
   const qp = $("quest-panel"); if(!qp) return;
+  if(G.mode==="open" && G.ow && typeof owQuestPanelHtml==="function"){ qp.innerHTML = owQuestPanelHtml(); return; }
   let html = `<h3>Quests</h3>`;
   const act = Object.entries(G.quests).filter(([id,q])=>!q.done);
   if(!act.length) html += `<p class="dim">No active quests. Speak with Mayor Thorn in Emberford.</p>`;
@@ -1185,16 +1205,23 @@ function combatVictory(){
   $("combat-bar").style.display="none";
   awardXp(xpEach);
   advanceEncounterQuest(enc);
+  if(G.mode==="open" && typeof owOnVictory==="function") owOnVictory(enc);
   refreshAll(); saveGame();
 }
 function combatDefeat(){
   COMBAT.over = true;
-  log(`<b>The party falls...</b> — but the Dawn is not done with you. You wake in Emberford's temple, bruised, alive, and poorer. (House rule: the Dawn intervenes.)`,"bad");
   const loss = Math.floor(G.gold*0.1); G.gold -= loss;
   for(const c of G.party){ c.dead=false; c.downed=false; c.deathSaves={s:0,f:0}; c.hp=Math.max(1,Math.floor(maxHp(c)/2)); c.conditions=[]; c.concentrating=null; }
   COMBAT = null;
   $("combat-bar").style.display="none";
-  enterMap("emberford", 24, 5);
+  if(G.mode==="open" && G.ow){ // the Dawn returns the party to its home village in the Realm
+    log(`<b>The party falls...</b> — but the Dawn is not done with you. You wake in ${esc(G.ow.homeName||"the spawn camp")}, bruised, alive, and poorer. (House rule: the Dawn intervenes.)`,"bad");
+    G.ow.wx = G.ow.home.x; G.ow.wy = G.ow.home.y; G.ow.inside = null; G.ow.stepsSinceEnc = 0;
+    enterMap("ow_surface", OW_CX, OW_CY);
+  } else {
+    log(`<b>The party falls...</b> — but the Dawn is not done with you. You wake in Emberford's temple, bruised, alive, and poorer. (House rule: the Dawn intervenes.)`,"bad");
+    enterMap("emberford", 24, 5);
+  }
   refreshAll(); saveGame();
 }
 
@@ -2813,7 +2840,7 @@ function buildCreate(){
     <input id="hero-name" type="text" placeholder="Your hero's name" maxlength="24" style="width:100%">
     <select id="hero-align"><option>Lawful Good</option><option>Neutral Good</option><option selected>Chaotic Good</option><option>Lawful Neutral</option><option>True Neutral</option><option>Chaotic Neutral</option><option>Lawful Evil</option><option>Neutral Evil</option><option>Chaotic Evil</option></select>
     <div id="create-err" class="bad"></div>
-    <button class="big-btn glow" onclick="finishCreate()">Begin the Campaign ➜</button>
+    <button class="big-btn glow" onclick="finishCreate()">${typeof pendingMode!=="undefined"&&pendingMode==="open"? "Enter the Endless Realm 🌍" : "Begin the Campaign ➜"}</button>
     </div></div>`;
   el.innerHTML = html;
   buildAbilitySection();
@@ -2893,14 +2920,24 @@ function finishCreate(){
   heroC.hp = maxHp(heroC);
   $("create-screen").style.display="none";
   $("game-screen").style.display="flex";
-  enterMap("emberford", 15, 10);
-  log(`<b>${esc(name)}</b> arrives in Emberford, a river town with a goblin problem and a graveyard problem. Speak with <b>Mayor Edda Thorn</b> (north-centre, by the plaza).`,"sys");
+  if(pendingMode==="open"){
+    G.mode = "open";
+    G.ow = newOWState();
+    enterMap("ow_surface", OW_CX, OW_CY);
+    log(`<b>${esc(name)}</b> steps through the Dawn Gate into the <b>Endless Realm</b> — a world with no edge and no map. It generates around you as you walk: forests, deserts, snowfields, lakes and highlands, dotted with villages, caves, dungeons, towers and ruins.`,"sys");
+    log(`There is no story here but the one you walk into. Take <b>bounties</b> (right panel), explore to discover places, rest at villages, and beware: the further from the Gate you roam, the higher the <b>Danger</b>. A village lies a short walk east — it makes a fine first home.`,"sys");
+  } else {
+    enterMap("emberford", 15, 10);
+    log(`<b>${esc(name)}</b> arrives in Emberford, a river town with a goblin problem and a graveyard problem. Speak with <b>Mayor Edda Thorn</b> (north-centre, by the plaza).`,"sys");
+  }
   log(`Controls: WASD/arrows or click to move · E to talk/interact · I inventory · C character · P spells · T progression · J journal · R short rest.`,"sys");
   refreshAll(); saveGame();
 }
 
 // ---------- Init ----------
-function startNewGame(){
+let pendingMode = "campaign"; // chosen on the title screen; finishCreate reads it
+function startNewGame(mode){
+  pendingMode = mode==="open"? "open" : "campaign";
   $("title-screen").style.display="none";
   $("create-screen").style.display="block";
   buildCreate();
@@ -2934,3 +2971,661 @@ function initGame(){
   if(loadGame()) $("continue-btn").style.display="inline-block";
 }
 document.addEventListener("DOMContentLoaded", initGame);
+
+// ============================================================
+// Part 5: THE ENDLESS REALM — infinite open-world mode.
+// The surface is a pure function of world coordinates + seed (value noise
+// for terrain, per-chunk POIs for structures), so the world is endless,
+// consistent on revisit, and only a 32x20 window around the hero is ever
+// built. Caves/dungeons/towers/ruins generate deterministic interiors.
+// ============================================================
+"use strict";
+const OW_VW = 32, OW_VH = 20, OW_CX = 16, OW_CY = 10, OW_CHUNK = 18;
+const OW_DYNAMIC = {}; // interior map cache, keyed by POI key
+
+// ---------- deterministic hashing / noise / rng ----------
+function owHash2(x, y, s){
+  let h = Math.imul(x|0, 374761393) ^ Math.imul(y|0, 668265263) ^ Math.imul(((s|0)>>>0) + 1, 974634239);
+  h = Math.imul(h ^ (h>>>13), 1274126177);
+  h ^= h>>>16;
+  return (h>>>0) / 4294967296;
+}
+function owNoise(x, y, scale, seed){
+  const fx = x/scale, fy = y/scale;
+  const x0 = Math.floor(fx), y0 = Math.floor(fy);
+  const tx = fx-x0, ty = fy-y0;
+  const sx = tx*tx*(3-2*tx), sy = ty*ty*(3-2*ty);
+  const v00 = owHash2(x0, y0, seed), v10 = owHash2(x0+1, y0, seed);
+  const v01 = owHash2(x0, y0+1, seed), v11 = owHash2(x0+1, y0+1, seed);
+  return (v00*(1-sx) + v10*sx)*(1-sy) + (v01*(1-sx) + v11*sx)*sy;
+}
+function owFbm(x, y, scale, seed){ return 0.65*owNoise(x, y, scale, seed) + 0.35*owNoise(x, y, scale/2.7, seed^0x51ab); }
+function owRng(seedInt){
+  let a = seedInt>>>0;
+  return function(){ a|=0; a = (a + 0x6D2B79F5)|0; let t = Math.imul(a ^ (a>>>15), 1|a); t = (t + Math.imul(t ^ (t>>>7), 61|t)) ^ t; return ((t ^ (t>>>14))>>>0) / 4294967296; };
+}
+function owStrSeed(str){ let h = 2166136261; for(let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h>>>0; }
+
+// ---------- open-world state ----------
+function owMakeBounty(tier){
+  return { tier, need: 5 + tier*3, have: 0, gold: 30 + tier*25, xp: 60 + tier*55 };
+}
+function newOWState(){
+  const seed = (Math.floor(Math.random()*2000000000) + 12345)>>>0;
+  return {
+    seed, wx: 0, wy: 0,
+    home: {x:0, y:0}, homeName: "the Dawn Gate camp",
+    steps: 0, stepsSinceEnc: 24, encSeq: 0,
+    discovered: {}, poiDone: {}, // poiDone: camps cleared / shrine last-use step
+    bounty: owMakeBounty(1), kills: 0, placesFound: 0,
+    trail: [], inside: null,
+  };
+}
+function owSeed(){ return (G && G.ow)? G.ow.seed : 12345; }
+
+// ---------- biomes ----------
+function owBiomeAt(wx, wy){
+  const s = owSeed();
+  const e = owFbm(wx, wy, 30, s^0xe1), m = owFbm(wx, wy, 36, s^0x3b), t = owFbm(wx, wy, 95, s^0x77);
+  if(e < 0.345) return {id:"shore", name:"Lakeshore Wilds", icon:"🌊", e, m, t};
+  if(t < 0.36) return m > 0.5? {id:"snow", name:"Snowy Pines", icon:"🌲", e, m, t} : {id:"snow", name:"Frostfield Plains", icon:"❄️", e, m, t};
+  if(t > 0.68 && m < 0.46) return {id:"desert", name:"Sunbaked Desert", icon:"🏜️", e, m, t};
+  if(e > 0.735) return {id:"highlands", name:"Rocky Highlands", icon:"⛰️", e, m, t};
+  if(m > 0.56) return {id:"forest", name:"Whispering Forest", icon:"🌳", e, m, t};
+  return {id:"plains", name:"Emerald Plains", icon:"🌿", e, m, t};
+}
+function owDanger(wx, wy){
+  const d = Math.floor(Math.hypot(wx||0, wy||0) / 90);
+  return Math.max(1, Math.min(6, 1 + d));
+}
+
+// ---------- points of interest (one per chunk, deterministic) ----------
+const OW_VILLAGE_NAMES = ["Millbrook","Thornford","Alder Hollow","Emberlyn","Stonebridge","Willowmere","Duskhaven","Fallowfield","Bramblewick","New Emberford"];
+const OW_PLACE_NAMES = {
+  cave:["Howling Cave","Goblin Grotto","The Sunless Hollow","Bats' Cathedral","Echo Cave"],
+  dungeon:["Barrow of the Ninth King","The Sunken Vault","Crypt of Embers","The Gaol Below","Tomb of the Pale Court"],
+  tower:["The Watchtower","Rook's Spire","The Broken Tower","Wizard's Folly","The Ashen Spire"],
+  ruins:["Ruins of Caer Lorn","The Fallen Forum","Ruins of the Old Road","The Shattered Abbey","Kingsfall Ruins"],
+  camp:["Bandit Camp","Rusk Remnant Camp","Wolf-Riders' Camp","Deserter Camp","Ashen Cult Camp"],
+  shrine:["Shrine of the Dawn","The Standing Stones","Shrine of the River","The Old Gods' Altar","Wayshrine"],
+};
+function owChunkPOI(cx, cy){
+  const s = owSeed();
+  if(cx===0 && cy===0) return null; // spawn chunk stays clear — the Dawn Gate camp sits at 0,0
+  if(cx===1 && cy===0){ // a starter village a short walk east of the Gate
+    return { key:"ow_village_1_0", type:"village", cx, cy, x: cx*OW_CHUNK + 9, y: cy*OW_CHUNK + 9, name: OW_VILLAGE_NAMES[0] };
+  }
+  const r = owHash2(cx, cy, s^0x901d);
+  if(r > 0.52) return null;
+  const ox = 4 + Math.floor(owHash2(cx, cy, s^0xa11)*10), oy = 4 + Math.floor(owHash2(cx, cy, s^0xb22)*10);
+  const x = cx*OW_CHUNK + ox, y = cy*OW_CHUNK + oy;
+  const biome = owBiomeAt(x, y);
+  const pick = owHash2(cx, cy, s^0xc33);
+  let type;
+  if(pick < 0.20) type = "village";
+  else if(pick < 0.40) type = "cave";
+  else if(pick < 0.58) type = "dungeon";
+  else if(pick < 0.72) type = "tower";
+  else if(pick < 0.84) type = "ruins";
+  else if(pick < 0.93) type = "camp";
+  else type = "shrine";
+  if(type==="village" && (biome.id==="desert" || biome.id==="snow") && owHash2(cx, cy, s^0xd44) < 0.5) type = "camp"; // fewer villages in harsh lands
+  const names = type==="village"? OW_VILLAGE_NAMES : OW_PLACE_NAMES[type];
+  const name = names[Math.floor(owHash2(cx, cy, s^0xe55) * names.length) % names.length];
+  return { key: "ow_" + type + "_" + cx + "_" + cy, type, cx, cy, x, y, name };
+}
+function owPOIsNear(wx, wy){
+  const ccx = Math.floor(wx/OW_CHUNK), ccy = Math.floor(wy/OW_CHUNK);
+  const out = [];
+  for(let cy=ccy-1; cy<=ccy+1; cy++) for(let cx=ccx-1; cx<=ccx+1; cx++){
+    const p = owChunkPOI(cx, cy); if(p) out.push(p);
+  }
+  return out;
+}
+function owEntranceOf(poi){ // world tile that triggers the interior
+  if(poi.type==="cave" || poi.type==="ruins" || poi.type==="shrine") return {x: poi.x, y: poi.y};
+  if(poi.type==="dungeon") return {x: poi.x, y: poi.y + 2};
+  if(poi.type==="tower") return {x: poi.x, y: poi.y + 1};
+  return null;
+}
+// Village houses: deterministic rects relative to the village centre.
+function owVillageHouses(poi){
+  const s = owSeed();
+  const offs = [[-6,-5],[4,-6],[-5,4],[5,3],[-1,-7],[2,6]];
+  const n = 3 + Math.floor(owHash2(poi.cx, poi.cy, s^0xf66)*3); // 3-5 houses
+  const houses = [];
+  for(let i=0;i<n;i++){
+    const [ox, oy] = offs[i];
+    houses.push({ x0: poi.x+ox, y0: poi.y+oy, x1: poi.x+ox+4, y1: poi.y+oy+3, doorSide: oy<0? "s" : "n" });
+  }
+  return houses;
+}
+function owStampTile(poi, wx, wy){
+  const dx = wx - poi.x, dy = wy - poi.y;
+  const s = owSeed();
+  if(poi.type==="village"){
+    for(const hse of owVillageHouses(poi)){
+      if(wx>=hse.x0 && wx<=hse.x1 && wy>=hse.y0 && wy<=hse.y1){
+        const border = wx===hse.x0 || wx===hse.x1 || wy===hse.y0 || wy===hse.y1;
+        if(!border) return "_";
+        const doorX = hse.x0 + 2;
+        if(hse.doorSide==="s" && wy===hse.y1 && wx===doorX) return "D";
+        if(hse.doorSide==="n" && wy===hse.y0 && wx===doorX) return "D";
+        return "#";
+      }
+    }
+    if(dx===0 && dy===0) return "W"; // the village well
+    if(Math.abs(dx)<=1 && Math.abs(dy)<=1) return "P";
+    if(dy===0 && Math.abs(dx)<=8) return "=";
+    if(dx===0 && Math.abs(dy)<=8) return "=";
+    return null;
+  }
+  if(poi.type==="cave"){
+    if(dx===0 && dy===0) return "E";
+    if(Math.max(Math.abs(dx),Math.abs(dy))===1 && dy!==1) return "#";
+    if(Math.max(Math.abs(dx),Math.abs(dy))===2 && owHash2(wx, wy, s^0x111) < 0.55) return "#";
+    if(dy===1 && dx===0) return ".";
+    return null;
+  }
+  if(poi.type==="dungeon"){
+    if(dx===0 && dy===2) return "E";
+    if(Math.abs(dx)<=2 && Math.abs(dy)<=1) return (Math.abs(dx)===2 || Math.abs(dy)===1)? "#" : ".";
+    return null;
+  }
+  if(poi.type==="tower"){
+    if(dx===0 && dy===1) return "E";
+    if(Math.abs(dx)<=1 && Math.abs(dy)<=1) return "#";
+    return null;
+  }
+  if(poi.type==="ruins"){
+    if(dx===0 && dy===0) return "E";
+    const ring = Math.max(Math.abs(dx),Math.abs(dy));
+    if(ring===2 && owHash2(wx, wy, s^0x222) < 0.7) return "#";
+    if(ring<2 && owHash2(wx, wy, s^0x333) < 0.3) return "%";
+    return null;
+  }
+  if(poi.type==="camp"){
+    if(dx===0 && dy===0) return "P";
+    if((dx===-2 && dy===0) || (dx===2 && dy===-1) || (dx===1 && dy===2)) return "_";
+    if(Math.max(Math.abs(dx),Math.abs(dy))<=2 && owHash2(wx, wy, s^0x444) < 0.18) return "%";
+    return null;
+  }
+  if(poi.type==="shrine"){
+    if(dx===0 && dy===0) return "P";
+    if(Math.abs(dx)<=1 && Math.abs(dy)<=1) return "P";
+    if((Math.abs(dx)===2 && dy===0) || (Math.abs(dy)===2 && dx===0)) return "o";
+    return null;
+  }
+  return null;
+}
+
+// ---------- the surface tile at a world position ----------
+function owTileAtWorld(wx, wy){
+  const s = owSeed();
+  const pois = owPOIsNear(wx, wy);
+  for(const poi of pois){ const st = owStampTile(poi, wx, wy); if(st) return st; }
+  // village green: kept clear and grassy around a village
+  for(const poi of pois) if(poi.type==="village" && Math.hypot(wx-poi.x, wy-poi.y) <= 9)
+    return owHash2(wx, wy, s^0x555) < 0.05? "*" : ",";
+  // the Dawn Gate camp at 0,0
+  if(wx===0 && wy===0) return "P";
+  if((wx===-2 && wy===-1) || (wx===2 && wy===-1) || (wx===-2 && wy===2)) return "_";
+  if(Math.max(Math.abs(wx), Math.abs(wy)) <= 7){ // spawn clearing: gentle and safe
+    return owHash2(wx, wy, s^0x666) < 0.04? "*" : ",";
+  }
+  const b = owBiomeAt(wx, wy);
+  const e = b.e, scatter = owHash2(wx, wy, s^0x777);
+  if(e < 0.315) return "W";
+  if(e < 0.35) return "%"; // shore
+  if(b.id==="desert"){
+    if(scatter < 0.012) return "T"; // cactus
+    if(scatter > 0.985) return "o";
+    return "%";
+  }
+  if(b.id==="snow"){
+    if(scatter < 0.05 + b.m*0.16) return "T";
+    return "S";
+  }
+  if(b.id==="highlands"){
+    if(e > 0.9) return "#";
+    if(scatter < (e-0.7)*0.9) return "o";
+    if(scatter > 0.97) return "T";
+    return ".";
+  }
+  if(b.id==="forest"){
+    if(scatter < 0.14 + b.m*0.22) return "T";
+    if(scatter > 0.965) return "*";
+    return ",";
+  }
+  // plains / shore grass
+  if(scatter < 0.05) return "T";
+  if(scatter > 0.96) return "*";
+  return ",";
+}
+function owVillageNear(wx, wy, radius){
+  for(const poi of owPOIsNear(wx, wy))
+    if(poi.type==="village" && Math.hypot(wx-poi.x, wy-poi.y) <= radius) return poi;
+  return null;
+}
+
+// ---------- surface window ----------
+function owNPCWorldList(){
+  // Villagers who live in villages inside the current window (world coords).
+  const out = [];
+  if(!G || !G.ow) return out;
+  for(const poi of owPOIsNear(G.ow.wx, G.ow.wy)){
+    if(poi.type!=="village") continue;
+    if(Math.abs(poi.x-G.ow.wx) > OW_CX+2 || Math.abs(poi.y-G.ow.wy) > OW_CY+2) continue;
+    out.push({ id:"ow_merchant", wx: poi.x+1, wy: poi.y, poi });
+    out.push({ id:"ow_innkeep", wx: poi.x, wy: poi.y+1, poi });
+    out.push({ id:"ow_villager", wx: poi.x-2, wy: poi.y, poi });
+  }
+  return out;
+}
+function buildOWSurface(){
+  const ow = G.ow;
+  const rows = [];
+  for(let ly=0; ly<OW_VH; ly++){
+    let row = "";
+    for(let lx=0; lx<OW_VW; lx++) row += owTileAtWorld(ow.wx + lx - OW_CX, ow.wy + ly - OW_CY);
+    rows.push(row);
+  }
+  const npcs = owNPCWorldList().map(n=>({ id: n.id, x: n.wx - ow.wx + OW_CX, y: n.wy - ow.wy + OW_CY }));
+  const biome = owBiomeAt(ow.wx, ow.wy);
+  return { id:"ow_surface", name: biome.name, outdoor:true, tiles: rows, exits: [], npcs, encounters: [], chests: [], owBiome: biome };
+}
+
+// ---------- surface movement ----------
+function owTryMove(dx, dy){
+  if(COMBAT || dlgOpen || modalOpen) return;
+  if(!curMap || curMap.id!=="ow_surface") return;
+  const ow = G.ow, h = hero();
+  const nwx = ow.wx + dx, nwy = ow.wy + dy;
+  if(BLOCKED.has(owTileAtWorld(nwx, nwy))) return;
+  if(owNPCWorldList().some(n=>n.wx===nwx && n.wy===nwy)) return; // people block, as in the campaign
+  ow.trail.unshift({x: ow.wx, y: ow.wy});
+  if(ow.trail.length > 6) ow.trail.pop();
+  ow.wx = nwx; ow.wy = nwy; ow.steps++; ow.stepsSinceEnc++;
+  curMap = buildOWSurface(); G.map = "ow_surface";
+  h.x = OW_CX; h.y = OW_CY;
+  // companions take the hero's recent world positions, converted to local
+  const party = G.party.filter(c=>!c.dead && c!==h);
+  party.forEach((c, i)=>{
+    const wp = ow.trail[i] || {x: ow.wx, y: ow.wy};
+    let lx = wp.x - ow.wx + OW_CX, ly = wp.y - ow.wy + OW_CY;
+    if(lx<0 || ly<0 || lx>=OW_VW || ly>=OW_VH || !passable(curMap, lx, ly) || (lx===OW_CX && ly===OW_CY)){ lx = OW_CX; ly = OW_CY; }
+    c.x = lx; c.y = ly;
+  });
+  owAfterStep();
+  if(!COMBAT && curMap && curMap.id==="ow_surface"){ refreshAll(); saveGame(); }
+}
+function owAfterStep(){
+  const ow = G.ow;
+  // standing on a POI entrance? go inside
+  for(const poi of owPOIsNear(ow.wx, ow.wy)){
+    const ent = owEntranceOf(poi);
+    if(ent && ent.x===ow.wx && ent.y===ow.wy && (poi.type==="cave" || poi.type==="dungeon" || poi.type==="tower" || poi.type==="ruins")){
+      owEnterInterior(poi);
+      return;
+    }
+  }
+  // bandit camp ambush (once per camp)
+  for(const poi of owPOIsNear(ow.wx, ow.wy)){
+    if(poi.type!=="camp") continue;
+    if(G.encountersDone["ow_surface:"+poi.key]) continue;
+    if(Math.max(Math.abs(poi.x-ow.wx), Math.abs(poi.y-ow.wy)) <= 3){
+      log(`<b>Ambush!</b> The camp's defenders rush you — this is no abandoned fire.`,"bad");
+      owStartEncounter("camp", poi);
+      return;
+    }
+  }
+  // shrine blessing
+  for(const poi of owPOIsNear(ow.wx, ow.wy)){
+    if(poi.type!=="shrine") continue;
+    if(Math.max(Math.abs(poi.x-ow.wx), Math.abs(poi.y-ow.wy)) > 1) continue;
+    const last = ow.poiDone[poi.key];
+    if(last!=null && ow.steps - last < 300) continue;
+    ow.poiDone[poi.key] = ow.steps;
+    const h = hero();
+    h.inspiration = true;
+    for(const c of G.party){ if(!c.dead) c.tempHp = Math.max(c.tempHp||0, 5); }
+    log(`🛕 <b>${esc(poi.name)}.</b> A hush, a warmth. The party gains Heroic Inspiration and 5 temporary HP.`,"good");
+    toast("The shrine blesses you");
+  }
+  owCheckDiscoveries();
+  // random wilderness encounters — never in a village, with a breather between fights
+  if(ow.stepsSinceEnc >= 14 && !owVillageNear(ow.wx, ow.wy, 7) && Math.random() < 0.085){
+    ow.stepsSinceEnc = 0;
+    const biome = owBiomeAt(ow.wx, ow.wy);
+    log(`<b>Ambush!</b> Something finds you in the ${esc(biome.name)}…`,"bad");
+    owStartEncounter(biome.id, null);
+  }
+}
+function owCheckDiscoveries(){
+  const ow = G.ow; if(!ow) return;
+  const biome = owBiomeAt(ow.wx, ow.wy);
+  const bk = "biome:" + biome.name;
+  if(!ow.discovered[bk]){
+    ow.discovered[bk] = true; ow.placesFound++;
+    log(`${biome.icon} <b>New land discovered: ${esc(biome.name)}.</b> (+15 XP)`,"good");
+    toast(`${biome.icon} ${biome.name}`);
+    awardXp(15);
+  }
+  for(const poi of owPOIsNear(ow.wx, ow.wy)){
+    if(Math.hypot(poi.x-ow.wx, poi.y-ow.wy) > 9) continue;
+    const pk = "poi:" + poi.key;
+    if(ow.discovered[pk]) continue;
+    ow.discovered[pk] = true; ow.placesFound++;
+    const icons = {village:"🏘️", cave:"🕳️", dungeon:"🚪", tower:"🗼", ruins:"🏛️", camp:"⛺", shrine:"⛩️"};
+    log(`${icons[poi.type]||"📍"} <b>Discovered: ${esc(poi.name)}</b> (${poi.type}). (+25 XP)`,"good");
+    toast(`${icons[poi.type]||"📍"} ${poi.name}`);
+    awardXp(25);
+  }
+  owArriveSurface();
+}
+function owArriveSurface(){
+  const ow = G.ow; if(!ow) return;
+  ow.inside = null;
+  const v = owVillageNear(ow.wx, ow.wy, 8);
+  if(v && (ow.home.x!==v.x || ow.home.y!==v.y)){
+    ow.home = {x: v.x, y: v.y}; ow.homeName = v.name;
+    log(`🏘️ <b>${esc(v.name)}</b> — a village of the Endless Realm. It is your home now: Long Rests are safe here, and the Dawn will return you here if you fall.`,"good");
+    toast(`Home: ${v.name}`);
+  }
+}
+function owCanLongRest(){
+  if(!G.ow || !curMap) return false;
+  if(curMap.id!=="ow_surface") return false;
+  if(owVillageNear(G.ow.wx, G.ow.wy, 8)) return true;
+  if(Math.hypot(G.ow.wx, G.ow.wy) <= 4) return true; // the Dawn Gate camp
+  return false;
+}
+
+// ---------- encounters ----------
+const OW_TIER = { giant_rat:1, bandit:1, goblin:1, wolf:1, skeleton:1, zombie:1, acolyte:1,
+  hobgoblin:2, bugbear:2, ghoul:2, ogre:3, cultist_fanatic:3, wight:3, captain_rusk:3, mage:4, forge_ogre:4, drowned_abbot:3 };
+const OW_TABLES = {
+  plains:["wolf","bandit","giant_rat","goblin","bugbear"],
+  forest:["wolf","goblin","bandit","bugbear","ghoul"],
+  desert:["skeleton","zombie","giant_rat","cultist_fanatic","ghoul"],
+  snow:["wolf","skeleton","zombie","ghoul","wight"],
+  highlands:["hobgoblin","bugbear","goblin","ogre","wight"],
+  shore:["giant_rat","zombie","skeleton","bandit","ghoul"],
+  cave:["giant_rat","skeleton","goblin","ghoul","hobgoblin","bugbear"],
+  dungeon:["skeleton","zombie","ghoul","cultist_fanatic","wight","mage"],
+  tower:["cultist_fanatic","acolyte","mage","wight","skeleton"],
+  ruins:["skeleton","ghoul","wight","zombie","cultist_fanatic"],
+  camp:["bandit","bandit","bugbear","hobgoblin","goblin"],
+};
+function owPickMonsters(theme, danger, count){
+  const table = OW_TABLES[theme] || OW_TABLES.plains;
+  const maxTier = danger<=1? 1 : danger===2? 2 : danger<=4? 3 : 4;
+  const pool = table.filter(id=>(OW_TIER[id]||1) <= maxTier);
+  const use = pool.length? pool : [table[0]];
+  const out = [];
+  for(let i=0;i<count;i++) out.push(use[Math.floor(Math.random()*use.length)]);
+  return out;
+}
+function owFreeTilesAround(cx, cy, minR, maxR, n){
+  const tiles = [];
+  let guard = 0;
+  while(tiles.length < n && guard++ < 300){
+    const dx = Math.round((Math.random()*2-1)*maxR), dy = Math.round((Math.random()*2-1)*maxR);
+    const r = Math.max(Math.abs(dx), Math.abs(dy));
+    if(r < minR || r > maxR) continue;
+    const x = cx+dx, y = cy+dy;
+    if(x<0 || y<0 || x>=curMap.tiles[0].length || y>=curMap.tiles.length) continue;
+    if(!passable(curMap, x, y)) continue;
+    if(occupied(x, y)) continue;
+    if(tiles.some(t=>t[0]===x && t[1]===y)) continue;
+    if(G.party.some(c=>!c.dead && c.x===x && c.y===y)) continue;
+    tiles.push([x, y]);
+  }
+  if(tiles.length < n){ // deterministic fallback: scan the ring in order
+    for(let dy=-maxR; dy<=maxR && tiles.length<n; dy++) for(let dx=-maxR; dx<=maxR && tiles.length<n; dx++){
+      const r = Math.max(Math.abs(dx), Math.abs(dy));
+      if(r < minR || r > maxR) continue;
+      const x = cx+dx, y = cy+dy;
+      if(x<0 || y<0 || x>=curMap.tiles[0].length || y>=curMap.tiles.length) continue;
+      if(!passable(curMap, x, y) || occupied(x, y)) continue;
+      if(tiles.some(t=>t[0]===x && t[1]===y)) continue;
+      if(G.party.some(c=>!c.dead && c.x===x && c.y===y)) continue;
+      tiles.push([x, y]);
+    }
+  }
+  return tiles;
+}
+function owStartEncounter(theme, poi){
+  const ow = G.ow, h = hero();
+  const danger = owDanger(ow.wx, ow.wy);
+  const count = Math.min(6, 2 + Math.floor(Math.random()*2) + (danger>=3?1:0) + (danger>=5?1:0));
+  const mids = poi && poi.type==="camp"? owPickMonsters("camp", danger, count) : owPickMonsters(theme, danger, count);
+  const spots = owFreeTilesAround(h.x, h.y, 2, 4, mids.length);
+  if(!spots.length) return; // nowhere legal to spring from — the ambush melts away
+  const monsters = mids.slice(0, spots.length).map((mid, i)=>[mid, spots[i][0], spots[i][1]]);
+  if(!monsters.length) return;
+  const enc = { id: poi? poi.key : "ow_enc_" + (++ow.encSeq), x: h.x, y: h.y, r: 3,
+    monsters, loot: { gold: danger * (5 + Math.floor(Math.random()*12)), items: Math.random()<0.3? ["potion_healing"] : [] } };
+  startCombat(enc);
+}
+
+// ---------- interiors (caves, dungeons, towers, ruins) ----------
+function owPoiFromKey(key){
+  const m = /^ow_(village|cave|dungeon|tower|ruins|camp|shrine)_(-?\d+)_(-?\d+)$/.exec(key||"");
+  if(!m) return null;
+  const poi = owChunkPOI(parseInt(m[2],10), parseInt(m[3],10));
+  return (poi && poi.key===key)? poi : null;
+}
+function owInteriorByKey(key){
+  if(OW_DYNAMIC[key]) return OW_DYNAMIC[key];
+  const poi = owPoiFromKey(key);
+  if(!poi) return null;
+  OW_DYNAMIC[key] = owGenInterior(poi);
+  return OW_DYNAMIC[key];
+}
+function owEnterInterior(poi){
+  G.ow.inside = poi.key;
+  const map = owInteriorByKey(poi.key);
+  if(!map) return;
+  const icons = {cave:"🕳️", dungeon:"🚪", tower:"🗼", ruins:"🏛️"};
+  log(`${icons[poi.type]||""} You enter <b>${esc(poi.name)}</b>. Danger ${"◆".repeat(owDanger(poi.x, poi.y))}. The glowing ⬆ tile leads back out.`,"sys");
+  toast(poi.name);
+  enterMap(poi.key, map.start.x, map.start.y);
+}
+function owCarveCorridor(g, x0, y0, x1, y1){
+  let x = x0, y = y0;
+  while(x!==x1){ g[y][x] = "."; x += Math.sign(x1-x); }
+  while(y!==y1){ g[y][x] = "."; y += Math.sign(y1-y); }
+  g[y][x] = ".";
+}
+function owFlood(g, sx, sy){
+  const seen = new Set([sx+","+sy]); const q = [[sx, sy]];
+  while(q.length){
+    const [x, y] = q.shift();
+    for(const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx = x+dx, ny = y+dy, k = nx+","+ny;
+      if(seen.has(k)) continue;
+      if(ny<0 || ny>=g.length || nx<0 || nx>=g[ny].length) continue;
+      if(g[ny][nx]==="#") continue;
+      seen.add(k); q.push([nx, ny]);
+    }
+  }
+  return seen;
+}
+function owGenInterior(poi){
+  const danger = owDanger(poi.x, poi.y);
+  const rng = owRng(owStrSeed(poi.key + ":" + owSeed()));
+  const theme = poi.type;
+  let W, H;
+  if(theme==="cave"){ W = 26; H = 17; } else if(theme==="dungeon"){ W = 30; H = 19; }
+  else if(theme==="tower"){ W = 18; H = 16; } else { W = 24; H = 15; }
+  const g = Array.from({length: H}, ()=>Array(W).fill("#"));
+  const rooms = [];
+  if(theme==="cave"){
+    // drunkard's-walk cavern
+    let x = Math.floor(W/2), y = H-3;
+    const start = {x, y};
+    let carved = 0;
+    const target = Math.floor(W*H*0.42);
+    let guard = 0;
+    while(carved < target && guard++ < 8000){
+      if(g[y][x]==="#"){ g[y][x] = "."; carved++; }
+      const d = Math.floor(rng()*4);
+      x += [1,-1,0,0][d]; y += [0,0,1,-1][d];
+      x = Math.max(1, Math.min(W-2, x)); y = Math.max(1, Math.min(H-2, y));
+    }
+    rooms.push({x0:1, y0:1, x1:W-2, y1:H-2, cx:start.x, cy:start.y});
+    var exitTile = {x: start.x, y: H-2};
+    g[exitTile.y][exitTile.x] = "E";
+    var startTile = start;
+  } else {
+    // rooms + corridors (dungeon / ruins / tower floors)
+    const nRooms = theme==="tower"? 3 : theme==="ruins"? 5 : 7;
+    let tries = 0;
+    while(rooms.length < nRooms && tries++ < 300){
+      const rw = 4 + Math.floor(rng()*4), rh = 3 + Math.floor(rng()*3);
+      const rx = 1 + Math.floor(rng()*(W-rw-2)), ry = 1 + Math.floor(rng()*(H-rh-2));
+      const room = {x0:rx, y0:ry, x1:rx+rw-1, y1:ry+rh-1, cx:rx+Math.floor(rw/2), cy:ry+Math.floor(rh/2)};
+      if(rooms.some(r=>room.x0 <= r.x1+1 && room.x1 >= r.x0-1 && room.y0 <= r.y1+1 && room.y1 >= r.y0-1)) continue;
+      rooms.push(room);
+    }
+    rooms.sort((a,b)=>(b.cy - a.cy) || (a.cx - b.cx)); // southernmost room = entry
+    for(const r of rooms) for(let y=r.y0; y<=r.y1; y++) for(let x=r.x0; x<=r.x1; x++) g[y][x] = (theme==="tower" && rng()<0.15)? "_" : ".";
+    for(let i=1;i<rooms.length;i++) owCarveCorridor(g, rooms[i-1].cx, rooms[i-1].cy, rooms[i].cx, rooms[i].cy);
+    const entry = rooms[0];
+    var exitTile = {x: entry.cx, y: Math.min(H-2, entry.y1)};
+    g[exitTile.y][exitTile.x] = "E";
+    var startTile = {x: entry.cx, y: Math.max(1, entry.y1-1)};
+    if(g[startTile.y][startTile.x]==="#"){ startTile = {x: entry.cx, y: entry.cy}; }
+  }
+  // guarantee every special tile is reachable from the start
+  const reach = owFlood(g, startTile.x, startTile.y);
+  const floors = [];
+  for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++) if(g[y][x]===".") floors.push([x, y]);
+  const farFloors = floors.filter(([x, y])=>reach.has(x+","+y) && Math.hypot(x-startTile.x, y-startTile.y) >= 6)
+    .sort((a,b)=>Math.hypot(b[0]-startTile.x, b[1]-startTile.y) - Math.hypot(a[0]-startTile.x, a[1]-startTile.y));
+  // encounters: groups on far floor tiles
+  const encounters = [];
+  const nGroups = theme==="cave"? 2 : theme==="tower"? 3 : 3 + (danger>=3?1:0);
+  const usedTiles = new Set([startTile.x+","+startTile.y, exitTile.x+","+exitTile.y]);
+  for(let gi=0; gi<nGroups; gi++){
+    const spot = farFloors.find(([x, y])=>!usedTiles.has(x+","+y) && ![...usedTiles].some(k=>{ const [ux, uy] = k.split(",").map(Number); return Math.max(Math.abs(ux-x), Math.abs(uy-y)) < 4; }));
+    if(!spot) break;
+    const count = Math.min(5, 2 + Math.floor(rng()*2) + (danger>=4?1:0));
+    const table = OW_TABLES[theme] || OW_TABLES.dungeon;
+    const maxTier = danger<=1? 1 : danger===2? 2 : danger<=4? 3 : 4;
+    const pool = table.filter(id=>(OW_TIER[id]||1) <= maxTier);
+    const monsters = [];
+    for(let i=0;i<count;i++){
+      const mid = pool[Math.floor(rng()*pool.length)] || table[0];
+      let placed = null;
+      for(const [ox, oy] of [[0,0],[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[2,0],[0,2]]){
+        const x = spot[0]+ox, y = spot[1]+oy, k = x+","+y;
+        if(g[y] && g[y][x] && g[y][x]!=="#" && !usedTiles.has(k)){ placed = [mid, x, y]; usedTiles.add(k); break; }
+      }
+      if(placed) monsters.push(placed);
+    }
+    if(monsters.length) encounters.push({ id: poi.key+"_e"+gi, x: spot[0], y: spot[1], r: 3, monsters,
+      loot: { gold: danger*(4 + Math.floor(rng()*10)), items: rng()<0.35? ["potion_healing"] : [] } });
+  }
+  // chests: the farthest floor tiles get the best loot
+  const chests = [];
+  const lootPool = danger>=4? ["potion_superior","longsword_1","potion_greater"] : danger>=2? ["potion_greater","holy_water","potion_healing"] : ["potion_healing","antitoxin"];
+  const nChests = theme==="cave"? 1 : 2;
+  for(let ci=0; ci<nChests; ci++){
+    const spot = farFloors.find(([x, y])=>!usedTiles.has(x+","+y));
+    if(!spot) break;
+    usedTiles.add(spot[0]+","+spot[1]);
+    chests.push({ x: spot[0], y: spot[1], loot: { gold: danger*(10 + Math.floor(rng()*20)), items: [lootPool[Math.floor(rng()*lootPool.length)]] } });
+  }
+  const tiles = g.map(row=>row.join(""));
+  return { name: poi.name, outdoor: false, tiles,
+    exits: [{ x: exitTile.x, y: exitTile.y, to: "ow_surface", tx: OW_CX, ty: OW_CY, label: "Back to the surface" }],
+    npcs: [], encounters, chests, start: startTile };
+}
+
+// ---------- victory, bounties, panels ----------
+function owOnVictory(enc){
+  const ow = G.ow; if(!ow) return;
+  ow.kills += enc.monsters.length;
+  const b = ow.bounty;
+  if(b){
+    b.have += enc.monsters.length;
+    if(b.have >= b.need){
+      log(`🎯 <b>Bounty complete!</b> The Realm's bounty board pays out: +${b.gold} gold, +${b.xp} XP.`,"good");
+      toast("🎯 Bounty complete!");
+      G.gold += b.gold;
+      ow.bounty = owMakeBounty(b.tier + 1);
+      awardXp(b.xp);
+    }
+  }
+}
+function owQuestPanelHtml(){
+  const ow = G.ow;
+  const biome = curMap && curMap.owBiome? curMap.owBiome : owBiomeAt(ow.wx, ow.wy);
+  const danger = owDanger(ow.wx, ow.wy);
+  const b = ow.bounty;
+  const bountyPct = b? Math.min(100, Math.floor(100*b.have/b.need)) : 100;
+  let html = `<h3>🌍 The Endless Realm</h3>`;
+  html += `<div class="quest main"><b>${biome.icon} ${esc(biome.name)}</b><div>World ${ow.wx}, ${ow.wy} · Danger <span class="danger">${"◆".repeat(danger)}${"◇".repeat(6-danger)}</span></div><div class="dim">Home: ${esc(ow.homeName)} · Places found: ${ow.placesFound} · Foes defeated: ${ow.kills}</div></div>`;
+  if(b) html += `<div class="quest"><b>🎯 Bounty ${b.tier}</b><div>Defeat ${b.need} creatures of the Realm (${b.have}/${b.need}).</div><div class="bar xp"><div style="width:${bountyPct}%"></div></div><div class="dim">Reward: ${b.gold} gold + ${b.xp} XP</div></div>`;
+  html += `<div class="quest"><b>🧭 Roam</b><div class="dim">Walk anywhere — the world never ends. 🕳️ caves, 🚪 dungeons, 🗼 towers and 🏛️ ruins hide loot and worse. Villages (houses + a well) are safe: rest there, trade, and set your home. Danger grows with distance from the Dawn Gate.</div></div>`;
+  return html;
+}
+// Location banner + POI icons, drawn after the base map render.
+const _drawMapOWBase = drawMap;
+drawMap = function(){
+  _drawMapOWBase();
+  const wi = $("world-info");
+  if(!G || G.mode!=="open" || !curMap){ if(wi) wi.style.display = "none"; return; }
+  if(wi){
+    wi.style.display = "block";
+    if(curMap.id==="ow_surface"){
+      const ow = G.ow, biome = curMap.owBiome || owBiomeAt(ow.wx, ow.wy);
+      const danger = owDanger(ow.wx, ow.wy);
+      const hd = Math.round(Math.hypot(ow.home.x-ow.wx, ow.home.y-ow.wy));
+      wi.innerHTML = `${biome.icon} <b>${esc(biome.name)}</b> · World ${ow.wx}, ${ow.wy} · Danger <span class="danger">${"◆".repeat(danger)}</span> · 🏠 ${esc(ow.homeName)}${hd? ` (${hd} steps)` : " — you are home"}`;
+    } else {
+      wi.innerHTML = `🗝️ <b>${esc(curMap.name)}</b> · Danger <span class="danger">${"◆".repeat(owDanger(G.ow.wx, G.ow.wy))}</span> · Step on the glowing ⬆ tile to climb back out`;
+    }
+  }
+  if(curMap.id!=="ow_surface") return;
+  const cv = $("map-canvas"); if(!cv || !cv._ts) return;
+  const ctx = cv.getContext("2d");
+  const ts = cv._ts, ox = cv._ox, oy = cv._oy, ow = G.ow;
+  const icons = {cave:"🕳️", dungeon:"🚪", tower:"🗼", ruins:"🏛️", village:"🏘️", camp:"⛺", shrine:"⛩️"};
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for(const poi of owPOIsNear(ow.wx, ow.wy)){
+    const lx = poi.x - ow.wx + OW_CX, ly = poi.y - ow.wy + OW_CY;
+    if(lx<0 || ly<0 || lx>=OW_VW || ly>=OW_VH) continue;
+    ctx.font = `${Math.floor(ts*0.72)}px serif`;
+    ctx.fillText(icons[poi.type]||"📍", ox + lx*ts + ts/2, oy + ly*ts + ts/2 - ts*0.55);
+  }
+  // the Dawn Gate camp marker at 0,0
+  const gx = 0 - ow.wx + OW_CX, gy = 0 - ow.wy + OW_CY;
+  if(gx>=0 && gy>=0 && gx<OW_VW && gy<OW_VH){
+    ctx.font = `${Math.floor(ts*0.72)}px serif`;
+    ctx.fillText("⛺", ox + gx*ts + ts/2, oy + gy*ts + ts/2 - ts*0.55);
+  }
+};
+
+// ---------- Realm folk ----------
+Object.assign(NPCS, {
+  ow_merchant:{ name:"Wandering Merchant", role:"Village shop", greeting:"ow_merchant_start" },
+  ow_innkeep:{ name:"Village Innkeeper", role:"Inn & hearth", greeting:"ow_inn_start" },
+  ow_villager:{ name:"Realm Villager", role:"Endless Realm local", greeting:"ow_villager_start" },
+});
+Object.assign(DIALOGUES, {
+  ow_merchant_start:{ text:"The merchant unrolls a pack heavy with other people's adventures. \"Everything's for sale in the Realm, friend — the world makes more of it every day. Mind the roads after dark, and if a tower looks empty, it isn't.\"", options:[
+    { t:"General goods.", do:"shop:general" },
+    { t:"Steel & armour.", do:"shop:smith" },
+    { t:"Potions & remedies.", do:"shop:apothecary" },
+    { t:"(Leave)" },
+  ]},
+  ow_inn_start:{ text:"The innkeeper sets down a bowl of something hot. \"Room's yours if you want it — villages are the only safe beds in the Realm. The Dawn Gate's that way, and every step from it the world gets teeth.\"", options:[
+    { t:"Take a room. (Long Rest)", do:"rest", goto:"ow_inn_rest" },
+    { t:"(Leave)" },
+  ]},
+  ow_inn_rest:{ text:"\"Sleep well. Whatever's out there will still be out there in the morning — that's the Realm for you.\"", options:[{ t:"(Leave)" }]},
+  ow_villager_start:{ text:"The villager leans on a fence, watching the horizon generate. \"Folks say the Realm has no edge — walk a year and it just keeps making more. Caves and dungeons out there are full of old gold and older bones. Take the bounties, friend. It's honest work, and the board pays.\"", options:[{ t:"(Leave)" }]},
+});
