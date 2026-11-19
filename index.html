@@ -20,9 +20,22 @@
     Now a pale shepherdess walks the fields at dusk, counting the graves. She means to gather the
     Crown's three shards and raise the Ashen Host, so that no living child ever marches to war again.</p>
     <p class="story">She has not counted on you.</p>
-    <button class="big-btn glow" onclick="startNewGame()">⚔️ New Campaign</button>
-    <button class="big-btn" id="continue-btn" style="display:none" onclick="continueGame()">Continue</button>
-    <p class="dim small">Six chapters · Levels 1–8 · Real dice, real rules: Weapon Mastery, death saves, concentration, the lot.<br>
+    <div class="mode-cards">
+      <div class="mode-card campaign-card">
+        <div class="mode-icon">⚔️</div>
+        <h2>The Campaign</h2>
+        <p>The hand-written story of the Hollow Crown: six chapters, Emberford, the Pale Shepherdess, and an ending that is yours to choose.</p>
+        <button class="big-btn glow" onclick="startNewGame('campaign')">⚔️ New Campaign</button>
+      </div>
+      <div class="mode-card world-card">
+        <div class="mode-icon">🌍</div>
+        <h2>The Endless Realm</h2>
+        <p>A completely open world that generates forever: forests, deserts, snowfields, caves, dungeons, towers and villages — with random enemies, bounties and danger that grows the further you roam.</p>
+        <button class="big-btn glow world" onclick="startNewGame('open')">🌍 Enter the Endless Realm</button>
+      </div>
+    </div>
+    <button class="big-btn" id="continue-btn" style="display:none" onclick="continueGame()">▶ Continue your adventure</button>
+    <p class="dim small">Levels 1–8 · Real dice, real rules: Weapon Mastery, death saves, concentration, the lot.<br>
     Rules content from the SRD 5.2.1, CC-BY 4.0, Wizards of the Coast. Story, places and people are original. No blood or gore.</p>
   </div>
 </div>
@@ -59,6 +72,7 @@
     </aside>
     <section id="center-panel">
       <div id="map-name">Emberford</div>
+      <div id="world-info" style="display:none"></div>
       <canvas id="map-canvas" width="960" height="600"></canvas>
       <div id="combat-bar" style="display:none"><div id="combat-actions"></div></div>
       <div id="dialogue-box" style="display:none">
