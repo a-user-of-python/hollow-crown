@@ -186,7 +186,9 @@ const MAPS = {
     encounters:[
       {id:"chapel_dead1",x:11,y:10,r:4,quest:"MQ2",stage:1,monsters:[["skeleton",10,9],["skeleton",13,9],["zombie",11,8]],loot:{gold:12,items:[]}},
       {id:"chapel_dead2",x:18,y:5,r:4,quest:"MQ2",stage:1,monsters:[["skeleton",18,5],["ghoul",19,6],["zombie",17,6]],loot:{gold:20,items:["holy_water"]}},
-      {id:"chapel_abbot",x:11,y:3,r:4,quest:"MQ2",stage:2,monsters:[["drowned_abbot",10,1],["skeleton",9,3],["skeleton",13,3]],loot:{gold:80,items:["crown_shard_band","sun_medallion","mace_1"]}},
+      {id:"chapel_abbot",x:11,y:3,r:4,quest:"MQ2",stage:2,monsters:[["drowned_abbot",10,1],["skeleton",9,3],["skeleton",13,3]],loot:{gold:80,items:["crown_shard_band","sun_medallion","mace_1"]},
+        objective:{type:"ritual",channeler:"drowned_abbot",rounds:3,text:"Stop the Drowned Abbot's rite — break his channeling within 3 rounds, or the chapel dead rise at his call."},
+        barrels:[{x:6,y:5,kind:"oil"},{x:17,y:10,kind:"water"}]},
     ],
     chests:[{x:20,y:8,loot:{gold:45,items:["potion_greater","holy_water"]}}]},
   whisperwood:{name:"The Whispering Wood",outdoor:true,tiles:WHISPERWOOD_TILES,
@@ -205,7 +207,9 @@ const MAPS = {
     npcs:[], start:{x:13,y:16},
     encounters:[
       {id:"mine_hobs1",x:12,y:12,r:4,quest:"MQ4",stage:1,monsters:[["hobgoblin",11,11],["hobgoblin",13,11],["hobgoblin",12,13]],loot:{gold:45,items:[]}},
-      {id:"mine_hobs2",x:3,y:5,r:4,quest:"SQ6",stage:1,surprise:"monsters",monsters:[["hobgoblin",2,3],["hobgoblin",1,4]],loot:{gold:30,items:["potion_greater"]}},
+      {id:"mine_hobs2",x:3,y:5,r:4,quest:"SQ6",stage:1,surprise:"monsters",monsters:[["hobgoblin",2,3],["hobgoblin",1,4]],loot:{gold:30,items:["potion_greater"]},
+        objective:{type:"escape",text:"Ambush in the side-chamber! Break out — get your hero to the mine's glowing ⬆ exit, or cut your way out."},
+        barrels:[{x:4,y:7,kind:"oil"}]},
       {id:"mine_forge",x:21,y:4,r:5,quest:"MQ4",stage:2,monsters:[["forge_ogre",21,3],["hobgoblin",18,5],["hobgoblin",22,5]],loot:{gold:200,items:["crown_shard_thorns","greataxe_1","chain_mail_1"]}},
     ],
     chests:[{x:20,y:7,loot:{gold:70,items:["potion_superior"]}},{x:5,y:16,loot:{gold:40,items:[]}},{x:21,y:16,loot:{gold:55,items:["warhammer_1"]}}]},
@@ -214,7 +218,9 @@ const MAPS = {
     npcs:[{id:"mayor",x:14,y:5},{id:"lyra_s",x:15,y:6},{id:"guard",x:16,y:10}],
     start:{x:15,y:10},
     encounters:[
-      {id:"siege_wave1",x:15,y:3,r:5,quest:"MQ5",stage:1,monsters:[["skeleton",14,2],["skeleton",16,2],["zombie",15,4],["zombie",13,3]],loot:{gold:0,items:[]}},
+      {id:"siege_wave1",x:15,y:3,r:5,quest:"MQ5",stage:1,monsters:[["skeleton",14,2],["skeleton",16,2],["zombie",15,4],["zombie",13,3]],loot:{gold:0,items:[]},
+        objective:{type:"survive",rounds:4,text:"Hold Emberford's square — survive 4 rounds and the first wave breaks."},
+        barrels:[{x:13,y:5,kind:"oil"},{x:18,y:8,kind:"water"}]},
       {id:"siege_wave2",x:8,y:10,r:5,quest:"MQ5",stage:1,monsters:[["ghoul",7,9],["skeleton",8,11],["wight",9,10]],loot:{gold:0,items:["potion_greater"]}},
       {id:"siege_wave3",x:22,y:10,r:5,quest:"MQ5",stage:2,monsters:[["wight",22,9],["ghoul",23,11],["skeleton",21,11],["cultist_fanatic",22,12]],loot:{gold:60,items:["potion_superior"]}},
     ],
@@ -226,7 +232,9 @@ const MAPS = {
     encounters:[
       {id:"crypt_dead1",x:12,y:12,r:4,quest:"MQ6",stage:1,monsters:[["wight",11,11],["skeleton",13,11],["ghoul",12,13]],loot:{gold:50,items:[]}},
       {id:"crypt_dead2",x:3,y:5,r:4,quest:"MQ6",stage:1,monsters:[["ghoul",2,3],["ghoul",1,4],["skeleton",2,5]],loot:{gold:40,items:["potion_superior"]}},
-      {id:"crypt_vespera",x:13,y:3,r:3,quest:"MQ6",stage:2,monsters:[["vespera",13,2],["wight",11,3],["wight",15,3]],loot:{gold:0,items:[]}},
+      {id:"crypt_vespera",x:13,y:3,r:3,quest:"MQ6",stage:2,monsters:[["vespera",13,2],["wight",11,3],["wight",15,3]],loot:{gold:0,items:[]},
+        objective:{type:"ritual",channeler:"vespera",rounds:3,text:"Vespera is weaving the Crown's rite — break her channeling within 3 rounds, or she calls more dead to her side."},
+        barrels:[{x:6,y:5,kind:"oil"},{x:18,y:5,kind:"oil"}]},
     ],
     chests:[{x:20,y:8,loot:{gold:100,items:["staff_ember"]}},{x:19,y:16,loot:{gold:80,items:["leather_1"]}}]},
 };
