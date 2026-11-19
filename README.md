@@ -18,6 +18,16 @@ built from the **SRD 5.2.1** (CC-BY 4.0, Wizards of the Coast LLC).
   subclass at 3, ASI/Feat at 4 and 8.
 - Turn-based tactical combat on the standard **5-foot grid**: movement, actions,
   bonus actions, reactions and opportunity attacks, conditions, enemy AI.
+- Combat with a pulse: enemies fight by **instinct** — wolves hunt the isolated
+  and wounded, soldiers focus-fire but won't pile on, casters hunt whoever is
+  concentrating (Shift-click a monster to read its instinct). Groups check
+  **morale** and may flee or surrender when their leader falls. Set-piece fights
+  carry **objectives** beyond killing — hold out for N rounds, reach the exit,
+  break a ritual before it completes — and arenas have **explosive barrels and
+  lingering surfaces**: fire spreads from oil, lightning arcs across water,
+  cold freezes water to ice, and everyone can **shove as a bonus action**.
+  Even a miss helps: grazes chip the target and build **Momentum** toward
+  your next attack.
 - Three-panel screen: party quick-info (HP / XP / spell slots) on the left, the play
   grid in the centre, quests and context on the right. Menus for Character, Inventory,
   Spells, Progression (class feature tree), the Armoury (every weapon & armour with
