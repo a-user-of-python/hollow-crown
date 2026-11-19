@@ -2703,7 +2703,8 @@ function openArmoury(){
 function openJournal(){
   let html = `<h2>Journal</h2>`;
   const entries = Object.entries(G.quests);
-  if(!entries.length) html += `<p class="dim">No quests yet.</p>`;
+  if(!entries.length && !(G.mode==="open" && G.ow && G.ow.bounty)) html += `<p class="dim">No quests yet.</p>`;
+  if(G.mode==="open" && G.ow && G.ow.bounty){ const b=G.ow.bounty; html += `<div class="quest"><b>🎯 Bounty ${b.tier}</b> <span class="dim">(Endless Realm)</span><div class="cur-stage">➤ Defeat ${b.need} creatures of the Realm (${b.have}/${b.need})</div><div class="dim">Reward: ${b.gold} gold + ${b.xp} XP</div></div>`; }
   for(const [id,q] of entries){
     html += `<div class="quest ${QUESTS[id].main?"main":""}"><b>${QUESTS[id].main?"★ ":""}${esc(QUESTS[id].name)}</b> ${q.done?"<span class='good'>(complete)</span>":""}`;
     QUESTS[id].stages.forEach((s,i)=>{ html += `<div class="${q.done||i<q.stage?"done-stage": i===q.stage?"cur-stage":"dim"}">${q.done||i<q.stage?"✓": i===q.stage?"➤":"○"} ${esc(s)}</div>`; });
@@ -2832,6 +2833,7 @@ function buildCreate(){
     <p class="dim">Background boost: +2 to one and +1 to another of the background's abilities (${BACKGROUNDS[createSel.bgId].abilities.map(a=>ABILITY_NAMES[a]).join(", ")}), or +1 to all three.</p>
     <div class="shop-row"><span>+2 boost</span><select id="boost2">${BACKGROUNDS[createSel.bgId].abilities.map(a=>`<option value="${a}">${ABILITY_NAMES[a]}</option>`).join("")}</select></div>
     <div class="shop-row"><span>+1 boost</span><select id="boost1">${BACKGROUNDS[createSel.bgId].abilities.map(a=>`<option value="${a}">${ABILITY_NAMES[a]}</option>`).join("")}</select></div>
+    <p class="dim">Tip: picking the <b>same</b> ability for both boosts means <b>+1 to all three</b> background abilities instead.</p>
     <h3>5 · Skills (${SKILL_CHOICES[createSel.classId].n} from your class)</h3>
     <div id="skill-picks">${SKILL_CHOICES[createSel.classId].from.map(s=>`<label class="skillpick"><input type="checkbox" value="${s}" onchange="limitSkills(this,${SKILL_CHOICES[createSel.classId].n})"> ${s}</label>`).join("")}</div>
     <p class="dim">Plus your background's skills: ${BACKGROUNDS[createSel.bgId].skills.join(", ")}${createSel.speciesId==="human"?", plus one more of your choice (Human: Skillful — Perception is added)":""}${createSel.speciesId==="elf"?", plus Perception (Keen Senses)":""}.</p>
