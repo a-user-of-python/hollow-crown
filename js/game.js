@@ -904,7 +904,7 @@ function actorState(a){ return COMBAT.state[a.uid]; }
 function allActors(){ return COMBAT.actors; }
 function livingParty(){ return G.party.filter(c=>!c.dead); }
 function activeParty(){ return G.party.filter(c=>!c.dead && !c.downed); }
-function enemiesAlive(){ return COMBAT.actors.filter(a=>a.isMonster && !a.dead); }
+function enemiesAlive(){ return COMBAT.actors.filter(a=>a.isMonster && !a.dead && !a.surrendered); }
 function distFt(a,b){ return Math.max(Math.abs(a.x-b.x), Math.abs(a.y-b.y))*5; }
 function occupied(x,y, ignoreUid){
   if(G.party.some(c=>!c.dead && c.uid!==ignoreUid && c.x===x&&c.y===y)) return true;
@@ -1012,6 +1012,7 @@ function startCombat(enc){
     actors.push(c); state[c.uid] = freshTurnState();
     c.inCombat = true;
   }
+  let leaderUid = null, leaderCr = -1; // group leader: highest CR, ties go to the first-listed (encounters list their boss first)
   enc.monsters.forEach(([mid,x,y],i)=>{
     const def = MONSTERS[mid];
     const m = { uid:"m"+enc.id+i, mid, isMonster:true, name:def.name, x, y, cr:def.cr,
@@ -1023,7 +1024,12 @@ function startCombat(enc){
       token: (G.party.some(c=>c.token===def.name[0]) && def.name[1])? def.name[1].toUpperCase() : def.name[0],
       creatureType:def.creatureType||"humanoid", saveProf:def.saveProf||[], resistNonmagic:!!def.resistNonmagic,
       redirectAttack:!!def.redirectAttack, skills:def.skills||null,
-      vuln:def.vuln||[], immune:def.immune||[], resist:def.resist||[], boss:!!def.boss };
+      vuln:def.vuln||[], immune:def.immune||[], resist:def.resist||[], boss:!!def.boss,
+      // Fun pass: targeting profile + per-enemy AI runtime state
+      profile: def.profile||"mindless", jitter: ((i*37 + enc.id.length*7) % 11),
+      currentTargetUid:null, lastAttackerUid:null,
+      fleeing:false, surrendered:false, fled:false, channeling:false, guardUid:null, degraded:false };
+    { const c = crNum(def.cr) + (def.boss? 0.001:0); if(c>leaderCr){ leaderCr = c; leaderUid = m.uid; } }
     actors.push(m); state[m.uid] = freshTurnState();
     G.codex[mid] = (G.codex[mid]||0)+1;
   });
@@ -1038,7 +1044,27 @@ function startCombat(enc){
     return {a, init: rr.kept+bonus, roll:rr.kept, bonus};
   }).sort((p,q)=> q.init-p.init || (q.a.isMonster?0:1)-(p.a.isMonster?0:1));
   COMBAT = { enc, actors: withInit.map(w=>w.a), order: withInit, state, turnIdx:-1, round:0, mode:null, awaiting:null, surprisedSide: enc.surprise||null, xpPool: enc.monsters.reduce((s,[mid])=>s+ (monsterXp(mid)),0), over:false };
+  // Fun pass combat state: focus-fire bookkeeping, morale, surfaces, barrels, objectives.
+  COMBAT.roundTargets = {}; COMBAT.moraleFlags = {}; COMBAT.surfaces = {}; COMBAT.objective = null; COMBAT.leaderDead = false;
+  const barrelSrc = [...(enc.barrels||[]).map(b=>({b, fromMap:false})), ...((curMap && curMap.barrels)||[]).map(b=>({b, fromMap:true}))];
+  COMBAT.barrels = barrelSrc
+    .filter(({b})=>!(G.barrelsBroken && G.barrelsBroken[curMap.id+":"+b.x+","+b.y]))
+    .map(({b, fromMap})=>({x:b.x, y:b.y, kind:b.kind||"oil", hp:10, dead:false, fromMap}));
+  COMBAT.leaderUid = leaderUid;
+  if(enc.objective){
+    const o = JSON.parse(JSON.stringify(enc.objective));
+    o.roundsElapsed = 0; o.resolved = false; o.failed = false;
+    if(o.type==="escape") o.tiles = (curMap.exits||[]).map(e=>({x:e.x, y:e.y}));
+    COMBAT.objective = o;
+    if(o.type==="ritual"){
+      const ch = COMBAT.actors.find(a=>a.isMonster && a.mid===o.channeler);
+      if(ch){ ch.channeling = true; o.channelerUid = ch.uid;
+        for(const m of COMBAT.actors){ if(m.isMonster && m!==ch){ m.profile = "defender"; m.guardUid = ch.uid; } } }
+    }
+    log(`🎯 <b>Objective:</b> ${esc(o.text)}`,"sys");
+  }
   if(enc.surprise) log(enc.surprise==="party"? "The enemy strikes from surprise — you have Disadvantage on Initiative!" : "You catch the enemy by surprise — they have Disadvantage on Initiative.","sys");
+  log(`<span class="dim">Shift-click a monster in combat to read its instinct — every creature hunts differently now.</span>`,"sys");
   log(`<b>Combat!</b> Initiative: ${withInit.map(w=>`${esc(w.a.name)} ${w.init}`).join(", ")}.`,"bad");
   $("combat-bar").style.display="block";
   refreshAll();
@@ -1054,7 +1080,8 @@ function freshTurnState(){ return {moveLeft:0, actionUsed:false, bonusUsed:false
 function currentActor(){ return COMBAT.actors[COMBAT.turnIdx]; }
 function renderTurnOrder(){
   const el = $("turn-order"); if(!el||!COMBAT) return;
-  el.innerHTML = COMBAT.order.map((w,i)=>{
+  const objHtml = COMBAT.objective? `<div class="tord obj">🎯 ${esc(COMBAT.objective.text)}<span class="dim">${objectiveProgressText()}</span></div>` : "";
+  el.innerHTML = objHtml + COMBAT.order.map((w,i)=>{
     const a=w.a; const dead = a.dead || (a.downed);
     return `<div class="tord ${i===COMBAT.turnIdx?"cur":""} ${dead?"dead":""}">${i+1}. ${esc(a.name)} <span class="dim">(${w.init})</span> ${a.isMonster?`HP ${Math.max(0,a.hp)}/${a.maxHp}`:`HP ${Math.max(0,a.hp)}/${maxHp(a)}`}</div>`;
   }).join("");
@@ -1063,7 +1090,12 @@ async function nextTurn(){
   if(!COMBAT || COMBAT.over) return;
   if(checkCombatEnd()) return;
   COMBAT.turnIdx++;
-  if(COMBAT.turnIdx >= COMBAT.actors.length){ COMBAT.turnIdx = 0; COMBAT.round++; log(`— Round ${COMBAT.round+1} —`,"sys"); }
+  if(COMBAT.turnIdx >= COMBAT.actors.length){ COMBAT.turnIdx = 0; COMBAT.round++; log(`— Round ${COMBAT.round+1} —`,"sys");
+    COMBAT.roundTargets = {}; // the focus-fire cap is per round
+    tickSurfaces();
+    objectiveRoundTick();
+    if(!COMBAT || COMBAT.over) return;
+  }
   const a = currentActor();
   const st = actorState(a);
   Object.assign(st, freshTurnState());
@@ -1087,8 +1119,10 @@ async function nextTurn(){
       spiritGuardiansHit(a, g);
     }
   }
+  // standing in fire burns at the start of your turn
+  if(COMBAT.surfaces && !a.dead){ const s = COMBAT.surfaces[a.x+","+a.y]; if(s && s.type==="fire"){ log(`${esc(a.name)} is standing in flames!`,"bad"); applyDamage(a, rollDie(4), "fire", null, {noSurfaceFx:true}); } }
   refreshAll();
-  if(a.dead || (a.isMonster&&a.hp<=0)){ nextTurn(); return; }
+  if(a.dead || a.surrendered || a.fled || (a.isMonster&&a.hp<=0)){ nextTurn(); return; }
   if(!a.isMonster && a.downed){ await deathSaveTurn(a); return; }
   if(a.conditions.some(x=>["Paralyzed","Stunned","Unconscious"].includes(x.name) || (x.name==="Incapacitated" && !x.turned))){
     log(`${esc(a.name)} is incapacitated and loses the turn.`,"bad");
@@ -1123,6 +1157,14 @@ async function resolveReadied(foe){
   }
 }
 function endTurnEffects(a){
+  // Ending your turn on ice: keep your feet or go Prone (DC 10 Dex).
+  if(COMBAT && COMBAT.surfaces && !a.dead && !a.surrendered){
+    const s = COMBAT.surfaces[a.x+","+a.y];
+    if(s && s.type==="ice" && !hasCond(a,"Prone")){
+      const sv = a.isMonster? d20Test({bonus: saveBonusMonster(a,"dex"), dc:10}) : d20Test({bonus: saveBonus(a,"dex")+blessDie(a), dc:10});
+      if(!sv.success){ addCondition(a,"Prone"); log(`${esc(a.name)} slips on the ice — <b>Prone</b>! (Dex save ${sv.total} vs DC 10)`,"bad"); }
+    }
+  }
   // Sleep (2024) is two-stage: Incapacitated first, then Unconscious on a later failed save.
   for(const cond of [...a.conditions]){
     if(cond.sleep===1){
@@ -1182,6 +1224,10 @@ async function deathSaveTurn(c){
 }
 function checkCombatEnd(){
   if(!COMBAT || COMBAT.over) return false;
+  if(COMBAT.objective && !COMBAT.objective.resolved && COMBAT.objective.type==="escape"){
+    const h = hero();
+    if(h && !h.dead && (COMBAT.objective.tiles||[]).some(t=>t.x===h.x && t.y===h.y)){ objectiveVictory("escape"); return true; }
+  }
   const foes = enemiesAlive();
   const partyUp = activeParty().length>0 || G.party.some(c=>!c.dead&&c.downed);
   if(foes.length===0){ combatVictory(); return true; }
@@ -1228,6 +1274,7 @@ function combatDefeat(){
 // ---------- Movement in combat ----------
 function moveActorTo(a, x, y){
   const st = actorState(a);
+  if(occupiedBarrel(x,y)) return false; // a barrel is a solid prop
   if(occupied(x,y,a.uid)) return false; // you can pass through an ally's space, but not end there
   const reach = bfs(curMap, a.x, a.y, Math.floor(st.moveLeft/5), a.uid, a.isMonster);
   const d = reach.get(x+","+y);
@@ -1329,7 +1376,7 @@ function performAttack(att, def, weaponOverride, opts={}){
   // Shield spell reaction (defender)
   const critRange = (!att.isMonster && att.classId==="fighter" && att.subclass)? 19 : (att.isMonster&&MONSTERS[att.mid].critRange)||20;
   let defAC = (def.isMonster? def.ac + (def.shieldActive?5:0) : armorClass(def)) + (effW.ranged? coverBonus(att,def):0);
-  let atkTotalBonus = atkBonus + (att.isMonster? 0 : blessDie(att)) + exhaustPen(att);
+  let atkTotalBonus = atkBonus + (att.isMonster? 0 : blessDie(att)) + exhaustPen(att) + (att.isMonster? 0 : (att.momentum||0));
   let r = d20Test({bonus: atkTotalBonus, adv, critRange});
   if(st.vexTarget===def.uid) st.vexTarget = null; // Vex is consumed by this attack
   // Bardic inspiration auto-spend on a near miss for party (any failed D20 Test)
@@ -1340,13 +1387,22 @@ function performAttack(att, def, weaponOverride, opts={}){
     att.inspiration = false; const r2 = d20Test({bonus: atkTotalBonus, adv, critRange}); log(`${esc(att.name)} — Heroic Inspiration reroll: ${r2.total} (was ${r.total}).`,"good"); r = r2;
   }
   const hit = r.crit || (!r.fumble && r.total >= defAC);
+  if(!att.isMonster) att.momentum = 0; // Momentum is spent by the attack roll, hit or miss
   const rollTxt = r.rolls.length>1? `[${r.rolls.join(",")}]→${r.kept}` : `${r.kept}`;
   if(!hit){
     log(`${esc(att.name)} attacks ${esc(def.name)} with ${esc(w.name)}: ${rollTxt} ${fmtMod(atkTotalBonus)} = ${r.total} vs AC ${defAC} — <b>miss</b>.`,"sys");
     // Graze mastery
+    let grazed = false;
     if(!att.isMonster && w.mastery==="Graze" && hasMasteryFor(att,w) && !w.ranged){
       const g = Math.max(0, amod(att, ability));
-      if(g>0){ log(`Graze: ${g} ${w.type} damage anyway.`,"sys"); applyDamage(def, g, w.type, att, {weapon:w}); }
+      if(g>0){ grazed = true; log(`Graze: ${g} ${w.type} damage anyway.`,"sys"); applyDamage(def, g, w.type, att, {weapon:w}); }
+    }
+    // Fail-forward: a party miss still clips for 1 (unless Graze mastery already
+    // paid out — the mastery replaces the chip) and builds Momentum.
+    if(!att.isMonster){
+      if(!grazed && def.isMonster && !def.dead){ log(`Graze! The blow still clips ${esc(def.name)} for 1.`,"sys"); applyDamage(def, 1, w.type, att, {weapon:w, chip:true}); }
+      att.momentum = Math.min(2, (att.momentum||0)+1);
+      log(`${esc(att.name)} builds Momentum (+${att.momentum} on their next attack roll).`,"sys");
     }
     afterAttack(att, def, w, false);
     return false;
@@ -1452,8 +1508,8 @@ function applyMastery(att, def, w, ability){
     case "Topple": { const sv = d20Test({bonus: def.isMonster? saveBonusMonster(def,"con") : saveBonus(def,"con")+blessDie(def), dc}); if(!sv.success && !hasCond(def,"Prone")){ addCondition(def,"Prone"); log(`Topple! ${esc(def.name)} is knocked <b>Prone</b> (save ${sv.total} vs ${dc}).`,"good"); } break; }
     case "Push": { // move 10 ft away if space
       const dx = Math.sign(def.x-att.x), dy = Math.sign(def.y-att.y);
-      for(let i=0;i<2;i++){ const nx=def.x+dx, ny=def.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,def.uid)){ def.x=nx; def.y=ny; } else break; }
-      log(`Push! ${esc(def.name)} is shoved back.`,"sys"); break; }
+      for(let i=0;i<2;i++){ const nx=def.x+dx, ny=def.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,def.uid)&&!occupiedBarrel(nx,ny)){ def.x=nx; def.y=ny; } else break; }
+      log(`Push! ${esc(def.name)} is shoved back.`,"sys"); landingFx(def); break; }
     case "Slow": addCondition(def,"Slowed",{expires:"turnEnd"}); actorState(def).slowedNext = true; log(`Slow: ${esc(def.name)}'s Speed drops by 10 ft next turn.`,"sys"); break;
     case "Sap": actorState(def).sapped = true; log(`Sap: ${esc(def.name)}'s next attack has Disadvantage.`,"sys"); break;
     case "Vex": actorState(att).vexTarget = def.uid; log(`Vex: ${esc(att.name)} has Advantage on the next attack against ${esc(def.name)}.`,"sys"); break;
@@ -1469,6 +1525,9 @@ function afterAttack(att, def, w, hit){
 }
 function applyDamage(target, amount, type, source, opts={}){
   let amt = amount;
+  const prevHp = target.hp;
+  // Enemies remember who hurt them — brutes and beasts hunt their last attacker.
+  if(target.isMonster && source && !source.isMonster && amount>0) target.lastAttackerUid = source.uid;
   // Taking damage wakes a sleeper and ends Turn Undead's hold
   if(amt>0){
     if(target.conditions.some(x=>x.sleep)){ target.conditions = target.conditions.filter(x=>!x.sleep); log(`${esc(target.name)} is jolted awake!`,"sys"); }
@@ -1501,6 +1560,7 @@ function applyDamage(target, amount, type, source, opts={}){
     refreshAll(); return;
   }
   target.hp -= amt;
+  if(amt>0 && !opts.noSurfaceFx) surfaceDamageFx(target, amt, type, source);
   // concentration check — for EVERY concentrating creature, monsters included
   if(target.concentrating && amt>0 && !target.dead){
     const dc = Math.max(10, Math.floor(amt/2));
@@ -1517,6 +1577,13 @@ function applyDamage(target, amount, type, source, opts={}){
     // a dead grappler releases its hold
     for(const a of COMBAT.actors) a.conditions = a.conditions.filter(x=>!(x.name==="Grappled" && x.grappler===target.uid));
     log(`<b>${esc(target.name)} is defeated!</b>`,"good");
+    onMonsterDown(target);
+  }
+  if(target.isMonster && amt>0){
+    // hitting a channeler can break the rite (concentration-style check, or death)
+    if(target.channeling && COMBAT.objective && !COMBAT.objective.resolved) channelingCheck(target, amt);
+    // first blood while the party stands visibly unhurt can shake a group's nerve
+    if(!target.dead && prevHp > target.maxHp/2 && target.hp <= target.maxHp/2 && activeParty().every(p=>p.hp >= maxHp(p)*0.9)) checkMorale("firstblood");
   }
   if(!target.isMonster && target.hp<=0){
     const leftover = -target.hp;
@@ -1571,7 +1638,7 @@ function extraAttacks(c){
 }
 function actorAt(x,y){
   const p = G.party.find(c=>!c.dead&&c.x===x&&c.y===y); if(p) return p;
-  if(COMBAT) return COMBAT.actors.find(a=>a.isMonster&&!a.dead&&a.x===x&&a.y===y)||null;
+  if(COMBAT) return COMBAT.actors.find(a=>a.isMonster&&!a.dead&&!a.surrendered&&a.x===x&&a.y===y)||null;
   return null;
 }
 function drawCombatOverlay(){
@@ -1579,11 +1646,34 @@ function drawCombatOverlay(){
   const cv = $("map-canvas"), ctx = cv.getContext("2d");
   const ts = cv._ts, ox = cv._ox, oy = cv._oy; if(!ts) return;
   const a = currentActor();
+  // surfaces (fire / ice / water / oil)
+  if(COMBAT.surfaces){
+    const glyphs = {fire:"🔥", ice:"❄", water:"💧", oil:"🛢"};
+    const cols = {fire:"rgba(255,110,20,0.38)", ice:"rgba(160,220,255,0.38)", water:"rgba(60,140,255,0.32)", oil:"rgba(30,25,45,0.50)"};
+    for(const k of Object.keys(COMBAT.surfaces)){
+      const [sx,sy] = k.split(",").map(Number); const s = COMBAT.surfaces[k];
+      const px=ox+sx*ts, py=oy+sy*ts;
+      ctx.fillStyle = cols[s.type]||"rgba(255,255,255,0.2)"; ctx.fillRect(px+1,py+1,ts-2,ts-2);
+      ctx.font=`${Math.floor(ts*0.42)}px serif`; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText(glyphs[s.type]||"?", px+ts/2, py+ts/2);
+    }
+  }
+  // barrels (solid props; gold pips = remaining HP of 10)
+  if(COMBAT.barrels){
+    for(const b of COMBAT.barrels){
+      if(b.dead) continue;
+      const px=ox+b.x*ts, py=oy+b.y*ts;
+      ctx.font=`${Math.floor(ts*0.66)}px serif`; ctx.textAlign="center"; ctx.textBaseline="middle";
+      ctx.fillText(b.kind==="water"? "💧":"🛢", px+ts/2, py+ts/2);
+      ctx.fillStyle="#222"; ctx.fillRect(px+2,py+ts-5,ts-4,3);
+      ctx.fillStyle="#fc3"; ctx.fillRect(px+2,py+ts-5,(ts-4)*clamp(b.hp/10,0,1),3);
+    }
+  }
   // monsters
   for(const m of COMBAT.actors){
     if(!m.isMonster||m.dead) continue;
     const px=ox+m.x*ts, py=oy+m.y*ts;
-    ctx.fillStyle = m.boss? "#7a1f1f" : "#a33";
+    ctx.fillStyle = m.surrendered? "#777" : m.boss? "#7a1f1f" : "#a33";
     ctx.beginPath(); ctx.arc(px+ts/2,py+ts/2,ts*0.38,0,7); ctx.fill();
     ctx.strokeStyle = a===m? "#fff":"rgba(0,0,0,0.4)"; ctx.lineWidth=2; ctx.stroke();
     ctx.fillStyle="#fff"; ctx.font=`bold ${Math.floor(ts*0.4)}px sans-serif`; ctx.textAlign="center"; ctx.textBaseline="middle";
@@ -1591,6 +1681,9 @@ function drawCombatOverlay(){
     ctx.fillStyle="#400"; ctx.fillRect(px+2,py+ts-5,ts-4,3);
     ctx.fillStyle="#d33"; ctx.fillRect(px+2,py+ts-5,(ts-4)*clamp(m.hp/m.maxHp,0,1),3);
     if(m.conditions.length){ ctx.fillStyle="#ffd75e"; ctx.font=`${Math.floor(ts*0.3)}px sans-serif`; ctx.fillText(m.conditions.map(c=>c.name[0]).join(""), px+ts/2, py-3); }
+    if(m.channeling){ ctx.strokeStyle="#c9a0ff"; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(px+ts/2,py+ts/2,ts*0.46,0,7); ctx.stroke(); ctx.lineWidth=1; ctx.fillStyle="#c9a0ff"; ctx.font=`${Math.floor(ts*0.4)}px serif`; ctx.fillText("✦", px+ts/2, py-6); }
+    else if(m.surrendered){ ctx.font=`${Math.floor(ts*0.4)}px serif`; ctx.fillText("🏳️", px+ts/2, py-6); }
+    else if(m.fleeing){ ctx.font=`${Math.floor(ts*0.4)}px serif`; ctx.fillText("💨", px+ts/2, py-6); }
   }
   // movement range for current player actor
   if(a && !a.isMonster && !COMBAT.awaiting){
@@ -1705,12 +1798,13 @@ function castSpell(caster, spellId, slotLvl, target, point){
     if(hasCond(caster,"Poisoned")) adv = adv==="adv"? null : "dis";
     if(!caster.isMonster && caster.classId==="sorcerer" && caster.innateActive) adv = adv==="dis"? null : "adv"; // Innate Sorcery
     if(hasCond(caster,"Invisible")) adv = adv==="dis"? null : "adv";
-    const atkBonus = spellAttackBonusOf(caster) + (caster.isMonster? 0 : blessDie(caster) + exhaustPen(caster));
+    const atkBonus = spellAttackBonusOf(caster) + (caster.isMonster? 0 : blessDie(caster) + exhaustPen(caster) + (caster.momentum||0));
     let r = d20Test({bonus: atkBonus, adv});
     const ac = (t.isMonster? t.ac + (t.shieldActive?5:0) : armorClass(t)) + coverBonus(caster, t);
     let hitNow = r.crit || (!r.fumble && r.total>=ac);
     if(!hitNow && caster._metaActive && caster._metaActive.id==="seeking"){ const r2 = d20Test({bonus: atkBonus, adv}); log(`Seeking Spell: the attack rerolls (${r2.total}).`,"sys"); r = r2; hitNow = r.crit || (!r.fumble && r.total>=ac); }
     if(!hitNow && !caster.isMonster && caster.inspiration){ caster.inspiration = false; const r2 = d20Test({bonus: atkBonus, adv}); log(`${esc(caster.name)} — Heroic Inspiration reroll on the spell attack: ${r2.total} (was ${r.total}).`,"good"); r = r2; hitNow = r.crit || (!r.fumble && r.total>=ac); }
+    if(!caster.isMonster) caster.momentum = 0; // Momentum is spent by the attack roll, hit or miss
     if(hitNow){
       if(!r.crit && canCastShield(t)){ castShieldReaction(t); if(r.total < ac+5){ log(`${esc(t.name)}'s Shield turns the spell aside!`,"good"); return; } }
       const dmgCrit = r.crit || ((hasCond(t,"Paralyzed")||hasCond(t,"Unconscious")||t.downed) && distFt(caster,t)<=5);
@@ -1728,7 +1822,15 @@ function castSpell(caster, spellId, slotLvl, target, point){
         for(let i=0;i<2;i++){ const nx=t.x+dx, ny=t.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,t.uid)){ t.x=nx; t.y=ny; } else break; }
         log(`Repelling Blast hurls ${esc(t.name)} back.`,"sys");
       }
-    } else log(`Spell attack ${r.total} vs AC ${ac} — miss.`,"sys");
+    } else {
+      log(`Spell attack ${r.total} vs AC ${ac} — miss.`,"sys");
+      // Fail-forward for spell attacks too: a graze for 1, and Momentum builds.
+      if(!caster.isMonster){
+        if(t.isMonster && !t.dead){ log(`Graze! The spell still sears ${esc(t.name)} for 1.`,"sys"); applyDamage(t, 1, type, caster, {spell:true, chip:true}); }
+        caster.momentum = Math.min(2, (caster.momentum||0)+1);
+        log(`${esc(caster.name)} builds Momentum (+${caster.momentum} on their next attack roll).`,"sys");
+      }
+    }
   };
   switch(spellId){
     case "magic_missile": {
@@ -1775,7 +1877,11 @@ function castSpell(caster, spellId, slotLvl, target, point){
       for(const t of targets){
         if(evokerSculpt && !t.isMonster){ log(`${esc(t.name)} is sculpted out of the blast.`,"good"); continue; }
         const succ = dealSaveDamage(t, dice, sp.dtype, sp.save, sp.half);
-        if(spellId==="thunderwave" && !succ && !t.dead){ const dx=Math.sign(t.x-caster.x), dy=Math.sign(t.y-caster.y); for(let i=0;i<2;i++){ const nx=t.x+dx,ny=t.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,t.uid)){t.x=nx;t.y=ny;} else break; } log(`Thunderwave hurls ${esc(t.name)} back 10 ft.`,"sys"); }
+        if(spellId==="thunderwave" && !succ && !t.dead){ const dx=Math.sign(t.x-caster.x), dy=Math.sign(t.y-caster.y); for(let i=0;i<2;i++){ const nx=t.x+dx,ny=t.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,t.uid)&&!occupiedBarrel(nx,ny)){t.x=nx;t.y=ny;} else break; } log(`Thunderwave hurls ${esc(t.name)} back 10 ft.`,"sys"); landingFx(t); }
+      }
+      if(spellId==="burning_hands"){ // the cone leaves the ground burning where it washed over foes
+        for(const t of targets) addSurface(t.x, t.y, "fire", 2);
+        damageBarrelsInArea(caster.x+dirx, caster.y+diry, 15, rollDice(3,6).tot, "fire", caster);
       }
       break; }
     case "fireball": case "ice_storm": case "shatter": {
@@ -1783,6 +1889,9 @@ function castSpell(caster, spellId, slotLvl, target, point){
       const targets = inArea(point.x, point.y, rFt);
       let dice = sp.dmg.slice(); if(sp.upcast) dice=[dice[0]+up*sp.upcast[0], dice[1]];
       for(const t of targets){ if(evokerSculpt && !t.isMonster){ log(`${esc(t.name)} is sculpted out of the blast.`,"good"); continue; } dealSaveDamage(t, dice, sp.dtype, sp.save, true); }
+      damageBarrelsInArea(point.x, point.y, rFt, rollDice(dice[0], dice[1]).tot, sp.dtype, caster);
+      if(spellId==="fireball") scorchArea(point.x, point.y, 10, rFt); // the blast's heart keeps burning; oil anywhere in it catches
+      if(spellId==="ice_storm" && COMBAT.surfaces){ for(const k of Object.keys(COMBAT.surfaces)){ const [sx,sy]=k.split(",").map(Number); if(Math.hypot(sx-point.x, sy-point.y) <= rFt/5+0.01 && COMBAT.surfaces[k].type==="water") COMBAT.surfaces[k] = {type:"ice", turnsLeft:3}; } }
       break; }
     case "lightning_bolt": {
       // line from caster toward point: all actors within 1 tile of the line, up to 100 ft
@@ -1904,7 +2013,7 @@ function renderCombatBar(){
   if(a.downed){ bar.innerHTML = `<b>${esc(a.name)}</b> is down, making death saves…`; return; }
   const st = actorState(a);
   const cls = a.classId;
-  let html = `<div class="cb-head"><b>${esc(a.name)}</b> · Move ${st.moveLeft} ft · ${st.actionUsed&&st.attacksLeft<=0? "Action used":"Action ready"} · ${st.bonusUsed? "Bonus used":"Bonus ready"}</div><div class="cb-btns">`;
+  let html = `<div class="cb-head"><b>${esc(a.name)}</b> · Move ${st.moveLeft} ft · ${st.actionUsed&&st.attacksLeft<=0? "Action used":"Action ready"} · ${st.bonusUsed? "Bonus used":"Bonus ready"}${a.momentum? ` · <b>Momentum +${a.momentum}</b> (next attack)`:""}</div><div class="cb-btns">`;
   html += `<button ${st.actionUsed&&st.attacksLeft<=0?"disabled":""} onclick="combatHint('attack')">⚔️ Attack (click a foe)</button>`;
   if(st.attacksLeft>0 && st.actionUsed) html += `<span class="dim">${st.attacksLeft} attack(s) left</span>`;
   html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('dash')">Dash</button>`;
@@ -1914,6 +2023,7 @@ function renderCombatBar(){
   html += `<button ${st.actionUsed&&st.attacksLeft<=0?"disabled":""} onclick="combatAction('grapple')">Grapple (click foe)</button>`;
   html += `<button ${st.actionUsed&&st.attacksLeft<=0?"disabled":""} onclick="combatAction('shove')">Shove Prone (click foe)</button>`;
   html += `<button ${st.actionUsed&&st.attacksLeft<=0?"disabled":""} onclick="combatAction('push')">Push 5 ft (click foe)</button>`;
+  html += `<button ${st.bonusUsed?"disabled":""} onclick="combatAction('bpush')">↗ Push (Bonus Action) (click foe)</button>`;
   html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('ready')">Ready Attack</button>`;
   if(hasCond(a,"Grappled")) html += `<button ${st.actionUsed?"disabled":""} onclick="combatAction('escape')">Escape Grapple</button>`;
   if(st.hasteAction) html += `<span class="dim">Haste action available (Attack ×1 / Dash / Disengage / Hide)</span>`;
@@ -2034,6 +2144,7 @@ function combatAction(kind){
     if(chk.success){ removeCondition(a,"Grappled"); st.moveLeft = speedOf(a); log(`${esc(a.name)} breaks free of the grapple (${chk.total} vs ${grap.dc||13})!`,"good"); }
     else log(`${esc(a.name)} struggles but stays grappled (${chk.total} vs ${grap.dc||13}).`,"bad");
   }
+  else if(kind==="bpush"){ if(st.bonusUsed){ log("Bonus Action already used.","bad"); return; } COMBAT.mode = {type:"bpush"}; log("Bonus-Action Push: click a foe within 5 ft to shove them 5 ft — into fire, off a ledge, wherever it hurts. (Esc cancels.)","sys"); return; }
   else if(kind==="grapple"||kind==="shove"||kind==="push"){ COMBAT.mode = {type:kind}; log(`Click a foe within 5 ft to ${kind==="push"?"push":kind}. (Esc cancels.)`,"sys"); return; }
   refreshAll(); renderCombatBar();
 }
@@ -2118,6 +2229,34 @@ async function enemyTurn(m){
   const st = actorState(m);
   await sleep(250);
   if(m.dead || COMBAT.over) { return; }
+  // morale-broken: run for a way out (an exit tile or the map edge; full speed + Dash) and vanish
+  if(m.fleeing){
+    st.moveLeft += (m.speed||30); // Dash
+    const W = curMap.tiles[0].length, H = curMap.tiles.length;
+    const exitTiles = (curMap.exits||[]).map(e=>[e.x, e.y]);
+    const onEscape = (x,y)=> x===0||y===0||x===W-1||y===H-1||tileAt(curMap,x,y)==="E"||exitTiles.some(([ex,ey])=>ex===x&&ey===y);
+    const escape = ()=>{ m.fled = true; m.dead = true; log(`${esc(m.name)} escapes into the dark!`,"sys"); };
+    if(onEscape(m.x,m.y)){ escape(); endTurnEffects(m); nextTurn(); return; }
+    const reach = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
+    let best=null, bd=-1e18;
+    for(const k of reach.keys()){
+      const [x,y]=k.split(",").map(Number);
+      if(occupied(x,y,m.uid)||occupiedBarrel(x,y)) continue;
+      const away = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y)));
+      const toExit = exitTiles.length? Math.min(...exitTiles.map(([ex,ey])=>Math.abs(ex-x)+Math.abs(ey-y))) : 0;
+      const d = (onEscape(x,y)? 1000:0) + away*3 - toExit;
+      if(d>bd){bd=d;best=[x,y];}
+    }
+    if(best && (best[0]!==m.x||best[1]!==m.y)) moveActorTo(m, best[0], best[1]);
+    if(!m.dead && onEscape(m.x,m.y)) escape(); else if(!m.dead) log(`${esc(m.name)} flees!`,"sys");
+    endTurnEffects(m); nextTurn(); return;
+  }
+  // a channeler does nothing but hold the rite together
+  if(m.channeling){
+    const o = COMBAT.objective;
+    log(`${esc(m.name)} channels the rite, pale light gathering… (${(o? (o.roundsElapsed||0)+1 : 1)} of ${o? o.rounds:3})`,"bad");
+    endTurnEffects(m); nextTurn(); return;
+  }
   // turned undead flee (Turn Undead: Frightened + Incapacitated, must move away)
   if(m.conditions.some(x=>x.turned)){
     const away = bfs(curMap, m.x, m.y, Math.floor(st.moveLeft/5), m.uid, true);
@@ -2144,10 +2283,25 @@ async function enemyTurn(m){
     const did = enemyCast(m);
     if(did){ await sleep(400); if(checkCombatEnd()) return; endTurnEffects(m); nextTurn(); return; }
   }
-  // choose target: nearest active party member
+  // choose target by instinct (targeting profile), not just "nearest"
   const targets = activeParty();
   if(!targets.length){ endTurnEffects(m); nextTurn(); return; }
-  let target = targets.sort((a,b)=>distFt(m,a)-distFt(m,b))[0];
+  let target = chooseTarget(m) || targets[0];
+  // flavour, once per profile per fight: when instinct overrules the obvious nearest target, say so
+  const nearest = targets.slice().sort((a,b)=>distFt(m,a)-distFt(m,b))[0];
+  if(target && nearest && target!==nearest){
+    COMBAT._instinctLogs = COMBAT._instinctLogs||{};
+    const pk = m.profile + (m.degraded?":deg":"");
+    if(!COMBAT._instinctLogs[pk]){
+      COMBAT._instinctLogs[pk] = true;
+      if(m.degraded) log(`${esc(m.name)}, leaderless, lunges at ${esc(target.name)} like a cornered beast.`,"sys");
+      else if(m.profile==="beast") log(`${esc(m.name)} ignores the front line — it hunts ${esc(target.name)}, the exposed one.`,"sys");
+      else if(m.profile==="skirmisher") log(`${esc(m.name)} slips past the front line toward ${esc(target.name)}.`,"sys");
+      else if(m.profile==="brute" && m.lastAttackerUid===target.uid) log(`${esc(m.name)} goes for the one who hurt it — ${esc(target.name)}.`,"sys");
+      else if(m.profile==="soldier") log(`${esc(m.name)} moves with cold discipline toward ${esc(target.name)}.`,"sys");
+      else if(m.profile==="defender") log(`${esc(m.name)} moves to shield what it guards, bearing down on ${esc(target.name)}.`,"sys");
+    }
+  }
   // pick a weapon: melee if in reach, otherwise the ranged attack if it has one
   const meleeAtk = m.atk.find(a2=>!a2.ranged) || m.atk[0];
   const rangedAtk = m.atk.find(a2=>a2.ranged);
@@ -2164,9 +2318,15 @@ async function enemyTurn(m){
     for(const k of reachTiles.keys()){
       const [x,y]=k.split(",").map(Number);
       if(occupied(x,y,m.uid)) continue;
+      if(occupiedBarrel(x,y)) continue;
       const d = Math.max(Math.abs(target.x-x),Math.abs(target.y-y));
       let score = d;
       if(atkDef.ranged){ const clear = losBetween(x,y,target.x,target.y) && d*5 <= (atkDef.range||60); score = clear? d : 1000 + d; }
+      // anything with a brain avoids ending its move in fire or on ice when it has a choice
+      const surf = COMBAT.surfaces && COMBAT.surfaces[k];
+      if(surf && (surf.type==="fire"||surf.type==="ice") && m.profile!=="mindless") score += 1000;
+      // a guardian stays near its charge
+      if(m.guardUid){ const g = COMBAT.actors.find(o=>o.uid===m.guardUid); if(g){ const gd = Math.max(Math.abs(g.x-x),Math.abs(g.y-y)); if(gd>2) score += (gd-2)*8; } }
       if(score<bd){bd=score;best=[x,y];}
     }
     if(best && (best[0]!==m.x||best[1]!==m.y)) moveActorTo(m, best[0], best[1]);
@@ -2184,6 +2344,25 @@ async function enemyTurn(m){
     moveToAttackPosition();
     await sleep(200);
   }
+  // Brutes shove: when the tile beyond their target is fire or a barrel, sometimes
+  // the shove is better than the swing (25%).
+  if(!m.dead && canHit() && profileOf(m)===PROFILES.brute && distFt(m,target)<=5 && Math.random()<0.25){
+    const dx = Math.sign(target.x-m.x), dy = Math.sign(target.y-m.y);
+    const lx = target.x+dx, ly = target.y+dy;
+    const s = COMBAT.surfaces && COMBAT.surfaces[lx+","+ly];
+    const barrelThere = occupiedBarrel(lx,ly);
+    if((s && s.type==="fire") || barrelThere){
+      const dc = 8 + modOf(m.ab.str) + monsterPB(m);
+      const sv = d20Test({bonus: Math.max(saveBonus(target,"str"), saveBonus(target,"dex")) + blessDie(target), dc});
+      log(`${esc(m.name)} heaves into ${esc(target.name)} — a shove toward ${s&&s.type==="fire"?"the flames":"the barrel"}! (save ${sv.total} vs DC ${dc})`,"bad");
+      if(!sv.success && !barrelThere && passable(curMap,lx,ly) && !occupied(lx,ly,target.uid)){ target.x = lx; target.y = ly; landingFx(target); log(`${esc(target.name)} is shoved back!`,"bad"); }
+      else if(!sv.success) log(`${esc(target.name)} slams against the barrel but stays on their feet.`,"sys");
+      else log(`${esc(target.name)} holds their ground.`,"sys");
+      await sleep(350);
+      if(checkCombatEnd()) return;
+      endTurnEffects(m); nextTurn(); return;
+    }
+  }
   if(!m.dead && canHit()){
     performAttack(m, target, atkDef, {});
     await sleep(350);
@@ -2196,7 +2375,11 @@ function enemyCast(m){
   const list = m.spells.list;
   const party = activeParty();
   if(!party.length) return false;
-  const heroT = party.sort((a,b)=>distFt(m,a)-distFt(m,b))[0];
+  const heroT = chooseTarget(m) || party[0];
+  if(heroT && heroT.concentrating && (m.profile==="caster"||m.profile==="skirmisher")){
+    COMBAT._instinctLogs = COMBAT._instinctLogs||{};
+    if(!COMBAT._instinctLogs["caster:conc"]){ COMBAT._instinctLogs["caster:conc"] = true; log(`${esc(m.name)} fixes on ${esc(heroT.name)} — the one holding a spell together.`,"sys"); }
+  }
   const can = id => monsterSlotAvailable(m, SPELLS[id].lvl);
   // acolyte-type: heal a wounded ally monster
   if(list.includes("cure_wounds") && can("cure_wounds")){
@@ -2204,14 +2387,20 @@ function enemyCast(m){
     if(wounded && distFt(m,wounded)<=5){ return castSpell(m, "cure_wounds", 1, wounded, null)===true; }
   }
   if(list.includes("bless") && COMBAT.round===0 && !COMBAT.actors.some(o=>o.isMonster&&hasCond(o,"Blessed")) && can("bless")){ return castSpell(m, "bless", 1, m, null)===true; }
-  if(list.includes("fireball") && can("fireball") && distFt(m,heroT)<=150){
-    return castSpell(m, "fireball", 3, null, {x:heroT.x, y:heroT.y})===true;
+  if(list.includes("fireball") && can("fireball")){
+    // Aim where the party clusters (max members in the 20-ft sphere), not at the
+    // nearest person — and don't waste the slot on a lone target.
+    const bp = bestFireballPoint(m);
+    if(bp && (bp.count>=2 || party.length<=1) && distFt(m,bp)<=150){
+      if(bp.count>=2) log(`${esc(m.name)} aims the Fireball where the party clusters — ${bp.count} of them in the blast!`,"bad");
+      return castSpell(m, "fireball", 3, null, {x:bp.x, y:bp.y})===true;
+    }
   }
   if(list.includes("blight") && can("blight") && distFt(m,heroT)<=30){ return castSpell(m, "blight", 4, heroT, null)===true; }
   if(list.includes("spirit_guardians") && can("spirit_guardians") && !m.concentrating && distFt(m,heroT)<=20){ return castSpell(m, "spirit_guardians", 3, m, null)===true; }
   if(list.includes("hold_person") && can("hold_person") && distFt(m,heroT)<=60 && Math.random()<0.6){ return castSpell(m, "hold_person", 2, heroT, null)===true; }
   if(list.includes("inflict_wounds") && can("inflict_wounds") && distFt(m,heroT)<=5){ return castSpell(m, "inflict_wounds", 1, heroT, null)===true; }
-  if(list.includes("magic_missile") && can("magic_missile") && distFt(m,heroT)<=120){ const low = party.sort((a,b)=>a.hp-b.hp)[0]; return castSpell(m, "magic_missile", 1, low, null)===true; }
+  if(list.includes("magic_missile") && can("magic_missile") && distFt(m,heroT)<=120){ const low = (m.profile==="caster"||m.profile==="skirmisher")? party.slice().sort((a,b)=>a.hp-b.hp)[0] : heroT; return castSpell(m, "magic_missile", 1, low, null)===true; }
   if(list.includes("sacred_flame") && distFt(m,heroT)<=60){ return castSpell(m, "sacred_flame", 0, heroT, null)===true; }
   if(list.includes("spiritual_weapon") && can("spiritual_weapon") && distFt(m,heroT)<=60){ return castSpell(m, "spiritual_weapon", 2, heroT, null)===true; }
   if(list.includes("misty_step") && can("misty_step") && COMBAT.actors.some(o=>!o.isMonster&&!o.dead&&distFt(o,m)<=5)){
@@ -2220,6 +2409,286 @@ function enemyCast(m){
     if(best){ m.x=best[0]; m.y=best[1]; useMonsterSlot(m,2); log(`${esc(m.name)} vanishes in mist and reappears across the room.`,"sys"); refreshAll(); return true; }
   }
   return false;
+}
+
+// ============================================================
+// Part 3d: THE FUN PASS — targeting profiles, morale & combat outs,
+// non-kill objectives, surfaces & barrels.
+// One scoring function (scoreTarget) under per-creature weight presets
+// (PROFILES) decides who enemies attack; enemies judge by VISIBLE proxies
+// (bloodied, soft armour, concentrating, isolated) — never exact HP maths.
+// ============================================================
+"use strict";
+const PROFILES = {
+  mindless:{label:"Mindless", instinct:"Mindless: shambles straight at the nearest living thing, heedless of everything else.", w:{dist:-6, canKill:0, bloodied:0, soft:0, conc:0, isolated:0, lastAtk:0, engaged:0, objective:0, big:0}},
+  beast:{label:"Predator", instinct:"Predator: hunts the isolated and the wounded — it drags down whoever strays from the pack.", w:{dist:-2, canKill:25, bloodied:18, soft:4, conc:0, isolated:22, lastAtk:14, engaged:8, objective:0, big:0}},
+  brute:{label:"Brute", instinct:"Brute: swings at whoever hurt it last, or the biggest thing in reach.", w:{dist:-4, canKill:8, bloodied:4, soft:-6, conc:0, isolated:0, lastAtk:26, engaged:4, objective:0, big:1.2}},
+  soldier:{label:"Disciplined", instinct:"Disciplined: focus-fires with its allies, finishes the wounded, guards its post. Kill its leader and the discipline dies with them.", w:{dist:-3, canKill:16, bloodied:10, soft:6, conc:10, isolated:4, lastAtk:6, engaged:14, objective:26, big:0}},
+  skirmisher:{label:"Skirmisher", instinct:"Skirmisher: slips past the front line for the soft, unarmoured ones at the back.", w:{dist:-1.5, canKill:20, bloodied:12, soft:22, conc:8, isolated:10, lastAtk:2, engaged:-6, objective:0, big:0}},
+  caster:{label:"Schemer", instinct:"Schemer: burns whoever is holding a spell together, and saves its worst magic for a cluster.", w:{dist:-1, canKill:14, bloodied:8, soft:12, conc:26, isolated:4, lastAtk:4, engaged:0, objective:6, big:0}},
+  defender:{label:"Guardian", instinct:"Guardian: stays beside what it protects and strikes whoever threatens it.", w:{dist:-2, canKill:10, bloodied:6, soft:0, conc:6, isolated:0, lastAtk:20, engaged:6, objective:40, big:0}},
+};
+function profileOf(m){ if(m.degraded) return PROFILES.beast; return PROFILES[m.profile] || PROFILES.mindless; }
+function crNum(cr){ const s = String(cr||"1"); if(s==="1/8") return 0.125; if(s==="1/4") return 0.25; if(s==="1/2") return 0.5; return parseFloat(s)||1; }
+function expectedDamage(m, t){
+  const atk = (m.atk||[])[0]; if(!atk) return 4;
+  const ac = t.isMonster? t.ac : armorClass(t);
+  const hitP = clamp((21-(ac-atk.bonus))/20, 0.05, 0.95);
+  return hitP * Math.max(1, atk.dmg[0]*(atk.dmg[1]+1)/2 + (atk.mod||0));
+}
+function scoreTarget(m, t, prof){
+  const w = prof.w;
+  let s = w.dist * (distFt(m,t)/5);
+  const tMax = t.isMonster? t.maxHp : maxHp(t);
+  if(t.hp <= expectedDamage(m,t)) s += w.canKill;
+  if(t.hp < tMax/2) s += w.bloodied;
+  const ac = t.isMonster? t.ac : armorClass(t);
+  if(ac <= 13) s += w.soft; else if(ac >= 17) s -= w.soft*0.5;
+  if(t.concentrating) s += w.conc;
+  const allies = COMBAT.actors.filter(o=>!o.dead && !o.downed && o.isMonster===t.isMonster);
+  if(!allies.some(o=>o!==t && distFt(o,t)<=5)) s += w.isolated;
+  if(m.lastAttackerUid===t.uid) s += w.lastAtk;
+  if(COMBAT.actors.some(o=>o.isMonster && o!==m && !o.dead && distFt(o,t)<=5)) s += w.engaged;
+  if(w.big) s += w.big * (tMax/10);
+  if(COMBAT.objective){
+    if(m.guardUid){ const g = COMBAT.actors.find(o=>o.uid===m.guardUid); if(g && distFt(t,g)<=10) s += w.objective; }
+    if(COMBAT.objective.type==="escape" && t.uid===G.heroUid) s += w.objective*0.4;
+  }
+  // focus-fire cap: each enemy already committed to this target this round makes it less attractive
+  const cnt = (COMBAT.roundTargets && COMBAT.roundTargets[t.uid])||0;
+  if(cnt>=1) s -= 18*cnt;
+  if(cnt>=2) s -= 32;
+  s += ((m.jitter||0)%7)-3; // small stable per-enemy preference, so identical monsters spread out
+  return s;
+}
+function chooseTarget(m){
+  const party = activeParty(); if(!party.length) return null;
+  const prof = profileOf(m);
+  let best = null, bestScore = -Infinity;
+  for(const t of party){ const s = scoreTarget(m, t, prof); if(s>bestScore){ bestScore = s; best = t; } }
+  // stickiness: keep the current target unless a new one is clearly better (+25%)
+  const cur = party.find(t=>t.uid===m.currentTargetUid);
+  if(cur && best && cur!==best){
+    const cs = scoreTarget(m, cur, prof);
+    if(bestScore <= cs + Math.abs(cs)*0.25 + 2) best = cur;
+  }
+  if(best){
+    m.currentTargetUid = best.uid;
+    COMBAT.roundTargets = COMBAT.roundTargets||{};
+    COMBAT.roundTargets[best.uid] = (COMBAT.roundTargets[best.uid]||0)+1;
+  }
+  return best;
+}
+function bestFireballPoint(m){
+  const party = activeParty(); if(!party.length) return null;
+  let best = null, bestN = 0;
+  const cand = new Set();
+  for(const p of party) for(let dx=-4; dx<=4; dx++) for(let dy=-4; dy<=4; dy++) cand.add((p.x+dx)+","+(p.y+dy));
+  for(const k of cand){
+    const [x,y] = k.split(",").map(Number);
+    const n = party.filter(p=>Math.hypot(p.x-x, p.y-y) <= 4.01).length;
+    if(n>bestN){ bestN = n; best = {x, y, count:n}; }
+  }
+  return best;
+}
+
+// ---------- Morale & combat outs ----------
+function moraleExempt(m){
+  if(["undead","construct","ooze","plant"].includes(m.creatureType)) return true;
+  if(m.mid==="cultist_fanatic" || m.boss) return true; // fanatics and bosses never break
+  if(m.profile==="mindless") return true;
+  return false;
+}
+function checkMorale(trigger){
+  if(!COMBAT || COMBAT.over) return;
+  COMBAT.moraleFlags = COMBAT.moraleFlags||{};
+  if(COMBAT.moraleFlags[trigger]) return; // one roll per trigger per fight
+  COMBAT.moraleFlags[trigger] = true;
+  const cand = enemiesAlive().filter(m=>!m.fleeing && !moraleExempt(m));
+  if(!cand.length) return;
+  const wisBest = Math.max(...cand.map(m=>modOf((m.ab && m.ab.wis)||10)));
+  const roll = rollDie(20);
+  const total = roll + wisBest;
+  const reason = {leader:"their leader has fallen", half:"half their number are down", firstblood:"first blood — and the party stands unhurt", ritual:"the rite is broken"}[trigger] || "the fight turns against them";
+  if(total >= 10){ log(`Morale check — ${reason}: rolled ${roll}${fmtMod(wisBest)} = ${total} vs DC 10. They hold — for now.`,"sys"); return; }
+  log(`<b>Their nerve breaks!</b> ${reason.charAt(0).toUpperCase()+reason.slice(1)} — the morale check fails (${roll}${fmtMod(wisBest)} = ${total} vs DC 10).`,"bad");
+  for(const m of cand){
+    const partyAdj = activeParty().filter(p=>distFt(p,m)<=5).length;
+    const reach = bfs(curMap, m.x, m.y, 6, m.uid, true);
+    let maxD = 0;
+    for(const k of reach.keys()){ const [x,y]=k.split(",").map(Number); const d = Math.min(...activeParty().map(p=>Math.abs(p.x-x)+Math.abs(p.y-y))); if(d>maxD) maxD = d; }
+    const smart = ((m.ab && m.ab.int)||10) >= 8 && ["humanoid","fey","giant"].includes(m.creatureType);
+    if(smart && (partyAdj>=2 || maxD<=3)){ // intelligent, cornered, no way out: surrender
+      m.surrendered = true;
+      log(`${esc(m.name)} throws down their weapon — <b>"Enough! We yield!"</b> (They leave their loot and run.)`,"good");
+    } else {
+      m.fleeing = true;
+      log(`${esc(m.name)} turns and runs!`,"bad");
+    }
+  }
+  if(cand.some(m=>m.surrendered) && Math.random()<0.25) log(`One of them whispers, wide-eyed: <i>"The Pale Shepherdess will hear of this…"</i>`,"sys");
+  refreshAll();
+}
+function onMonsterDown(m){
+  if(!COMBAT || COMBAT.over) return;
+  if(COMBAT.leaderUid===m.uid && !COMBAT.leaderDead){
+    COMBAT.leaderDead = true;
+    let degraded = false;
+    for(const o of enemiesAlive()){ if(o.profile==="soldier" && !o.boss && !o.degraded){ o.degraded = true; degraded = true; } }
+    if(degraded) log(`With their leader fallen, the soldiers' discipline breaks — they fight like cornered beasts now.`,"bad");
+    checkMorale("leader");
+  }
+  const mons = COMBAT.actors.filter(a=>a.isMonster);
+  const gone = mons.filter(a=>a.dead || a.fled || a.surrendered).length;
+  if(gone*2 >= mons.length) checkMorale("half");
+}
+
+// ---------- Objectives ----------
+function objectiveProgressText(){
+  const o = COMBAT && COMBAT.objective; if(!o) return "";
+  if(o.resolved) return o.failed? " — the rite was completed!" : " — done!";
+  if(o.type==="survive") return ` (survived ${o.roundsElapsed||0}/${o.rounds} rounds)`;
+  if(o.type==="ritual") return ` (rite completes in ${Math.max(0, o.rounds-(o.roundsElapsed||0))} rounds — hit the channeler to break it)`;
+  if(o.type==="escape") return " (hero: reach a glowing ⬆ exit tile)";
+  return "";
+}
+function objectiveRoundTick(){
+  const o = COMBAT && COMBAT.objective; if(!o || o.resolved) return;
+  o.roundsElapsed = (o.roundsElapsed||0)+1;
+  if(o.type==="survive" && o.roundsElapsed>=o.rounds){ objectiveVictory("survive"); return; }
+  if(o.type==="ritual"){
+    const ch = COMBAT.actors.find(a=>a.uid===o.channelerUid);
+    if(ch && !ch.dead && ch.channeling && o.roundsElapsed>=o.rounds) completeRitual(ch);
+  }
+}
+function objectiveVictory(kind){
+  const o = COMBAT.objective; if(o) o.resolved = true;
+  if(kind==="survive"){
+    log(`<b>The assault breaks!</b> You held — the survivors scatter into the dark.`,"good");
+    for(const m of enemiesAlive()){ m.fled = true; m.dead = true; }
+  }
+  if(kind==="escape") log(`<b>You break through and escape!</b> The fight is behind you — and you keep what you carry.`,"good");
+  combatVictory();
+}
+function channelingCheck(m, amt){
+  const dc = Math.max(10, Math.floor(amt/2));
+  const sv = d20Test({bonus: saveBonusMonster(m,"con"), dc});
+  if(m.dead || !sv.success){
+    m.channeling = false;
+    if(COMBAT.objective) COMBAT.objective.resolved = true;
+    log(`<b>The rite is broken!</b> ${esc(m.name)}'s channeling shatters${m.dead? " in death" : ` (Con save ${sv.total} vs DC ${dc})`}.`,"good");
+    checkMorale("ritual");
+  } else {
+    log(`${esc(m.name)} holds the rite together through the blow (Con save ${sv.total} vs DC ${dc}).`,"sys");
+  }
+}
+function makeSummon(mid, x, y){
+  const def = MONSTERS[mid];
+  return { uid:"sum"+mid+Math.floor(Math.random()*1e9), mid, isMonster:true, name:def.name, x, y, cr:def.cr,
+    ac:def.ac, maxHp:def.hp, hp:def.hp, speed:def.speed, ab:def.ab, atk:def.atk, spells:def.spells,
+    slotsUsed:0, slotsUsedByLvl:{}, conditions:[], dead:false, downed:false, color:"#a33",
+    token: def.name[0], creatureType:def.creatureType||"humanoid", saveProf:def.saveProf||[], resistNonmagic:!!def.resistNonmagic,
+    redirectAttack:!!def.redirectAttack, skills:def.skills||null, vuln:def.vuln||[], immune:def.immune||[], resist:def.resist||[], boss:false,
+    profile: def.profile||"mindless", jitter: 3, currentTargetUid:null, lastAttackerUid:null,
+    fleeing:false, surrendered:false, fled:false, channeling:false, guardUid:null, degraded:false };
+}
+function completeRitual(ch){
+  const o = COMBAT.objective; o.resolved = true; o.failed = true; ch.channeling = false;
+  log(`<b>The rite completes!</b> Pale light bursts from ${esc(ch.name)} — and the dead answer the call!`,"bad");
+  let placed = 0;
+  for(let r=1; r<=3 && placed<2; r++){
+    for(let dy=-r; dy<=r && placed<2; dy++) for(let dx=-r; dx<=r && placed<2; dx++){
+      if(Math.max(Math.abs(dx),Math.abs(dy))!==r) continue;
+      const x = ch.x+dx, y = ch.y+dy;
+      if(!passable(curMap,x,y) || occupied(x,y) || occupiedBarrel(x,y)) continue;
+      const sk = makeSummon("skeleton", x, y);
+      COMBAT.actors.push(sk); COMBAT.state[sk.uid] = freshTurnState(); COMBAT.order.push({a:sk, init:0, roll:0, bonus:0});
+      COMBAT.xpPool += monsterXp("skeleton");
+      placed++;
+    }
+  }
+  if(placed) log(`${placed===2? "Two skeletons claw" : "A skeleton claws"} up from the ground, summoned by the rite! The fight goes on — harder.`,"bad");
+  refreshAll();
+}
+
+// ---------- Surfaces & barrels ----------
+function surfaceAt(x,y){ return (COMBAT && COMBAT.surfaces)? COMBAT.surfaces[x+","+y] : null; }
+function addSurface(x, y, type, turns){
+  if(!COMBAT || !COMBAT.surfaces) return;
+  if(y<0 || y>=curMap.tiles.length || x<0 || x>=curMap.tiles[y].length) return;
+  if(BLOCKED.has(tileAt(curMap,x,y))) return;
+  const k = x+","+y; const cur = COMBAT.surfaces[k];
+  if(type==="fire" && cur && cur.type==="water"){ log("Flames hiss and die on the wet ground.","sys"); return; }
+  if(type==="water"){ // douse fire on and around the tile
+    for(const [dx,dy] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]){ const kk=(x+dx)+","+(y+dy); if(COMBAT.surfaces[kk] && COMBAT.surfaces[kk].type==="fire") delete COMBAT.surfaces[kk]; }
+  }
+  COMBAT.surfaces[k] = {type, turnsLeft: turns};
+}
+function tickSurfaces(){
+  if(!COMBAT || !COMBAT.surfaces) return;
+  for(const k of Object.keys(COMBAT.surfaces)){ const s = COMBAT.surfaces[k]; s.turnsLeft--; if(s.turnsLeft<=0) delete COMBAT.surfaces[k]; }
+}
+function surfaceDamageFx(t, amt, type, source){
+  if(!COMBAT || !COMBAT.surfaces) return;
+  const s = COMBAT.surfaces[t.x+","+t.y]; if(!s) return;
+  if(type==="fire" && s.type==="oil"){
+    addSurface(t.x, t.y, "fire", 2);
+    log(`The oil under ${esc(t.name)} catches — flames erupt!`,"bad");
+    applyDamage(t, rollDie(6), "fire", source, {noSurfaceFx:true});
+  }
+  if(type==="cold" && s.type==="water"){ addSurface(t.x, t.y, "ice", 3); log(`The water under ${esc(t.name)} flashes to ice!`,"sys"); }
+  if(type==="lightning" && s.type==="water"){
+    const others = COMBAT.actors.filter(o=>o!==t && !o.dead && !o.surrendered && distFt(o,t)<=10 && COMBAT.surfaces[o.x+","+o.y] && COMBAT.surfaces[o.x+","+o.y].type==="water");
+    if(others.length) log(`Lightning arcs through the water to ${others.map(o=>esc(o.name)).join(", ")}!`,"bad");
+    for(const o of others) applyDamage(o, Math.max(1, Math.floor(amt/2)), "lightning", source, {noSurfaceFx:true});
+  }
+}
+function landingFx(t){
+  const s = surfaceAt(t.x, t.y);
+  if(s && s.type==="fire" && !t.dead){ log(`${esc(t.name)} lands in the flames!`,"bad"); applyDamage(t, rollDie(4), "fire", null, {noSurfaceFx:true}); }
+}
+function igniteOilInArea(cx, cy, rFt){
+  if(!COMBAT || !COMBAT.surfaces) return;
+  const r = rFt/5;
+  for(const k of Object.keys(COMBAT.surfaces)){
+    const [x,y] = k.split(",").map(Number);
+    if(Math.hypot(x-cx, y-cy) <= r+0.01 && COMBAT.surfaces[k].type==="oil"){ COMBAT.surfaces[k] = {type:"fire", turnsLeft:2}; log("Oil catches in the blast — the ground blooms with fire!","bad"); }
+  }
+}
+function scorchArea(cx, cy, coreFt, fullFt){
+  const r = coreFt/5;
+  for(let y=cy-3; y<=cy+3; y++) for(let x=cx-3; x<=cx+3; x++){
+    if(Math.hypot(x-cx, y-cy) <= r+0.01) addSurface(x, y, "fire", 2);
+  }
+  igniteOilInArea(cx, cy, fullFt);
+}
+function occupiedBarrel(x,y){ return !!(COMBAT && COMBAT.barrels && COMBAT.barrels.some(b=>!b.dead && b.x===x && b.y===y)); }
+function damageBarrel(b, dmg, type, source){
+  if(!b || b.dead) return;
+  b.hp -= dmg;
+  log(`${source? esc(source.name) : "The blast"} hits the ${b.kind} barrel (${Math.max(0,b.hp)}/10 HP left).`,"sys");
+  if(b.hp<=0) explodeBarrel(b, source);
+}
+function damageBarrelsInArea(cx, cy, rFt, dmg, type, source){
+  if(!COMBAT || !COMBAT.barrels) return;
+  const r = rFt/5;
+  for(const b of COMBAT.barrels){ if(!b.dead && Math.hypot(b.x-cx, b.y-cy) <= r+0.01) damageBarrel(b, dmg, type, source); }
+}
+function explodeBarrel(b, source){
+  if(b.dead) return;
+  b.dead = true;
+  if(b.fromMap){ G.barrelsBroken = G.barrelsBroken||{}; G.barrelsBroken[curMap.id+":"+b.x+","+b.y] = true; }
+  if(b.kind==="water"){
+    log(`💧 The water barrel bursts, drenching the ground around it!`,"sys");
+    for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++) addSurface(b.x+dx, b.y+dy, "water", 3);
+    refreshAll(); return;
+  }
+  log(`🛢 <b>The oil barrel explodes!</b>`,"bad");
+  const victims = COMBAT.actors.filter(o=>!o.dead && !o.surrendered && Math.max(Math.abs(o.x-b.x), Math.abs(o.y-b.y))<=1);
+  for(const v of victims){ const dmg = rollDice(2,6).tot; log(`${esc(v.name)} is caught in the blast: ${dmg} fire.`,"bad"); applyDamage(v, dmg, "fire", source||null, {}); }
+  for(const ob of (COMBAT.barrels||[])){ if(ob!==b && !ob.dead && Math.max(Math.abs(ob.x-b.x), Math.abs(ob.y-b.y))<=1) damageBarrel(ob, rollDice(2,6).tot, "fire", source); }
+  for(let dy=-1; dy<=1; dy++) for(let dx=-1; dx<=1; dx++){ const x=b.x+dx, y=b.y+dy; if(!occupiedBarrel(x,y)) addSurface(x, y, "fire", 2); }
+  refreshAll();
 }
 
 // ---------- Canvas clicks ----------
@@ -2234,7 +2703,7 @@ function onCanvasClick(ev){
   if(!G||!curMap||dlgOpen||modalOpen) return;
   const {x,y} = canvasTile(ev);
   if(x<0||y<0||x>=curMap.tiles[0].length||y>=curMap.tiles.length) return;
-  if(COMBAT){ combatClick(x,y); return; }
+  if(COMBAT){ combatClick(x,y,ev); return; }
   // exploration: interact if adjacent person/chest clicked
   const h = hero();
   const npc = mapNPCs().find(n=>n.x===x&&n.y===y);
@@ -2251,12 +2720,18 @@ function onCanvasClick(ev){
   }
   if(best) tryMove(best[0],best[1]);
 }
-function combatClick(x,y){
+function combatClick(x,y,ev){
   const a = currentActor();
   if(!a || a.isMonster || a.downed || COMBAT.awaiting) return;
   const st = actorState(a);
   const target = actorAt(x,y);
   const mode = COMBAT.mode;
+  // Shift-click a monster: read its instinct (how it chooses whom to attack).
+  if(ev && ev.shiftKey && target && target.isMonster){
+    const prof = profileOf(target);
+    log(`<b>${esc(target.name)}</b> — HP ${Math.max(0,target.hp)}/${target.maxHp} · AC ${target.ac} · <b>Instinct (${prof.label}):</b> ${prof.instinct}${target.channeling? " <b>It is channeling a rite!</b>": target.fleeing? " It is fleeing!": target.surrendered? " It has surrendered.":""}`,"sys");
+    return;
+  }
   if(mode && mode.type==="teleport"){
     const d = Math.max(Math.abs(x-a.x),Math.abs(y-a.y))*5;
     if(d<=mode.range && passable(curMap,x,y) && !occupied(x,y,a.uid)){ a.x=x; a.y=y; COMBAT.mode=null; log(`${esc(a.name)} teleports.`,"sys"); afterPlayerAction(); }
@@ -2280,6 +2755,21 @@ function combatClick(x,y){
     afterPlayerAction();
     return;
   }
+  if(mode && mode.type==="bpush"){
+    if(!target || target.isMonster!==true){ log("Click a foe.","bad"); return; }
+    if(distFt(a,target)>5){ log("Too far.","bad"); return; }
+    if(st.bonusUsed){ log("Bonus Action already used.","bad"); COMBAT.mode = null; return; }
+    st.bonusUsed = true;
+    const dc = 8 + amod(a,"str") + pb(a);
+    const saveAb = modOf(target.ab.str)>=modOf(target.ab.dex)? "str":"dex"; // the target chooses the better of Str/Dex
+    const sv = d20Test({bonus: saveBonusMonster(target, saveAb), dc});
+    if(!sv.success){
+      const dx=Math.sign(target.x-a.x), dy=Math.sign(target.y-a.y); const nx=target.x+dx, ny=target.y+dy;
+      if(passable(curMap,nx,ny)&&!occupied(nx,ny,target.uid)&&!occupiedBarrel(nx,ny)){ target.x=nx; target.y=ny; landingFx(target); }
+      log(`Pushed! ${esc(target.name)} is shoved 5 ft away (save ${sv.total} vs ${dc}).`,"good");
+    } else log(`${esc(target.name)} resists the push (save ${sv.total} vs ${dc}).`,"sys");
+    COMBAT.mode = null; afterPlayerAction(); return;
+  }
   if(mode && (mode.type==="grapple"||mode.type==="shove"||mode.type==="push")){
     if(!target || target.isMonster!==true){ log("Click a foe.","bad"); return; }
     if(distFt(a,target)>5){ log("Too far.","bad"); return; }
@@ -2293,7 +2783,7 @@ function combatClick(x,y){
     if(!sv.success){
       if(mode.type==="grapple"){ addCondition(target,"Grappled",{grappler:a.uid, dc}); log(`Grappled! ${esc(target.name)} has Speed 0 and Disadvantage on attacks against anyone else (save ${sv.total} vs ${dc}). It can escape with an action.`,"good"); }
       else if(mode.type==="shove"){ addCondition(target,"Prone"); log(`Shoved! ${esc(target.name)} is Prone (save ${sv.total} vs ${dc}).`,"good"); }
-      else { const dx=Math.sign(target.x-a.x), dy=Math.sign(target.y-a.y); const nx=target.x+dx, ny=target.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,target.uid)){ target.x=nx; target.y=ny; } log(`Pushed! ${esc(target.name)} is shoved 5 ft away (save ${sv.total} vs ${dc}).`,"good"); }
+      else { const dx=Math.sign(target.x-a.x), dy=Math.sign(target.y-a.y); const nx=target.x+dx, ny=target.y+dy; if(passable(curMap,nx,ny)&&!occupied(nx,ny,target.uid)&&!occupiedBarrel(nx,ny)){ target.x=nx; target.y=ny; landingFx(target); } log(`Pushed! ${esc(target.name)} is shoved 5 ft away (save ${sv.total} vs ${dc}).`,"good"); }
     } else log(`${esc(target.name)} resists (save ${sv.total} vs ${dc}).`,"sys");
     COMBAT.mode = null; afterPlayerAction(); return;
   }
@@ -2360,6 +2850,31 @@ function combatClick(x,y){
     performAttack(a, target, a.equip.offhand, {noAbilityMod:true}); // no ability modifier to damage without Two-Weapon Fighting
     COMBAT.mode=null; afterPlayerAction(); return;
   }
+  // attack a barrel prop (clicking its tile in attack range)
+  const barrel = (!target && COMBAT.barrels)? COMBAT.barrels.find(b=>!b.dead && b.x===x && b.y===y) : null;
+  if(barrel){
+    const wid = a.equip.weapon; const w = wid? weaponDef(wid):null;
+    const range = a.wildShape? 5 : weaponRangeFt(w);
+    if(distFt(a,barrel) > range){ log(`Too far — move closer (weapon range ${range} ft).`,"bad"); return; }
+    if(w && w.ranged && !losBetween(a.x,a.y,x,y)){ log("No line of sight to the barrel.","bad"); return; }
+    if(st.actionUsed && st.attacksLeft<=0){ log("No attacks left this turn.","bad"); return; }
+    if(!st.actionUsed){ st.actionUsed = true; st.attacksLeft = extraAttacks(a); }
+    st.attacksLeft--;
+    const ub = a.wildShape? {bonus:6, ability:"str"} : weaponAttackBonus(a, w||{cat:"simple",props:[],ranged:false});
+    const r = d20Test({bonus: ub.bonus + blessDie(a) + exhaustPen(a) + (a.momentum||0)});
+    a.momentum = 0; // Momentum is spent by the attack roll, hit or miss
+    if(r.crit || (!r.fumble && r.total>=10)){
+      const wd = a.wildShape? [2,4] : (w? w.dmg : [1,0]);
+      const dmg = Math.max(1, rollDice(wd[0]*(r.crit?2:1), wd[1]).tot + amod(a, ub.ability) + ((w&&w.bonus)||0));
+      log(`${esc(a.name)} strikes the ${barrel.kind} barrel for ${dmg}!`,"sys");
+      damageBarrel(barrel, dmg, w? w.type : "bludgeoning", a);
+    } else {
+      log(`${esc(a.name)} swings at the barrel and misses.`,"sys");
+      a.momentum = Math.min(2, (a.momentum||0)+1);
+      log(`${esc(a.name)} builds Momentum (+${a.momentum} on their next attack roll).`,"sys");
+    }
+    afterPlayerAction(); return;
+  }
   // default: attack a foe, or move
   if(target && target.isMonster){
     const wid = a.equip.weapon; const w = wid? weaponDef(wid):null;
@@ -2379,7 +2894,7 @@ function combatClick(x,y){
   if(target && !target.isMonster){ return; }
   // move
   if(st.moveLeft>0){
-    if(moveActorTo(a,x,y)) renderCombatBar();
+    if(moveActorTo(a,x,y)){ if(checkCombatEnd()) return; renderCombatBar(); }
   }
 }
 
@@ -2719,7 +3234,7 @@ function openCodex(){
   if(!seen.length) html += `<p class="dim">You haven't fought anything yet.</p>`;
   for(const id of seen){
     const m = MONSTERS[id];
-    html += `<div class="quest"><b>${esc(m.name)}</b> <span class="dim">CR ${m.cr} (${monsterXp(id)} XP)</span><div>AC ${m.ac} · HP ${m.hp} · Speed ${m.speed} ft · Attacks: ${m.atk.map(a=>`${a.name} +${a.bonus} (${a.dmg[0]}d${a.dmg[1]}+${a.mod} ${a.type})`).join("; ")}</div><div class="dim">${(m.traits||[]).join(" ")}</div></div>`;
+    html += `<div class="quest"><b>${esc(m.name)}</b> <span class="dim">CR ${m.cr} (${monsterXp(id)} XP)</span><div>AC ${m.ac} · HP ${m.hp} · Speed ${m.speed} ft · Attacks: ${m.atk.map(a=>`${a.name} +${a.bonus} (${a.dmg[0]}d${a.dmg[1]}+${a.mod} ${a.type})`).join("; ")}</div><div class="dim">${(m.traits||[]).join(" ")}</div><div><b>Instinct (${(PROFILES[m.profile]||PROFILES.mindless).label}):</b> ${esc((PROFILES[m.profile]||PROFILES.mindless).instinct)}</div></div>`;
   }
   html += `<button class="big-btn" onclick="closeModal()">Close</button>`;
   openModal(html);
@@ -3530,6 +4045,22 @@ function owGenInterior(poi){
     if(monsters.length) encounters.push({ id: poi.key+"_e"+gi, x: spot[0], y: spot[1], r: 3, monsters,
       loot: { gold: danger*(4 + Math.floor(rng()*10)), items: rng()<0.35? ["potion_healing"] : [] } });
   }
+  // Fun pass: some dungeons/ruins hide a rite or a last stand (deterministic per POI, ~25%)
+  if((theme==="dungeon" || theme==="ruins") && encounters.length && rng() < 0.25){
+    const enc0 = encounters[0];
+    const casterMid = enc0.monsters.map(mm=>mm[0]).find(mid=>MONSTERS[mid].spells);
+    if(casterMid && rng() < 0.6){
+      enc0.objective = { type:"ritual", channeler: casterMid, rounds: 3, text: `A rite is being woven here — break the ${MONSTERS[casterMid].name}'s channeling within 3 rounds, or the dead answer.` };
+    } else {
+      enc0.objective = { type:"survive", rounds: 3, text: "The dark closes in — survive 3 rounds and the assault breaks." };
+    }
+  }
+  // an oil barrel stands in some interiors, waiting for a spark
+  let interiorBarrels = [];
+  if(rng() < 0.6){
+    const spot = farFloors.find(([x, y])=>!usedTiles.has(x+","+y));
+    if(spot){ usedTiles.add(spot[0]+","+spot[1]); interiorBarrels = [{x: spot[0], y: spot[1], kind:"oil"}]; }
+  }
   // chests: the farthest floor tiles get the best loot
   const chests = [];
   const lootPool = danger>=4? ["potion_superior","longsword_1","potion_greater"] : danger>=2? ["potion_greater","holy_water","potion_healing"] : ["potion_healing","antitoxin"];
@@ -3543,7 +4074,7 @@ function owGenInterior(poi){
   const tiles = g.map(row=>row.join(""));
   return { name: poi.name, outdoor: false, tiles,
     exits: [{ x: exitTile.x, y: exitTile.y, to: "ow_surface", tx: OW_CX, ty: OW_CY, label: "Back to the surface" }],
-    npcs: [], encounters, chests, start: startTile };
+    npcs: [], encounters, chests, barrels: interiorBarrels, start: startTile };
 }
 
 // ---------- victory, bounties, panels ----------
